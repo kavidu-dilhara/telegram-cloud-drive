@@ -308,4 +308,3 @@ fileRoutes.get("/files/:id/preview", async (c) => {
   if (length) headers["Content-Length"] = length;
   return new Response(image.body, { headers });
 });
-               

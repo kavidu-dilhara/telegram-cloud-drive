@@ -289,4 +289,3 @@ privateAuth.patch("/password", async (c) => {
   await logAction("password_change", undefined, { username: body.username.toLowerCase() });
   return c.json({ ok: true, token: result.token });
 });
-  
