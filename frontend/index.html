@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#f5f7fb" />
+    <meta name="description"
+      content="Cloud Drive - a private file manager backed by your own Telegram channel." />
+    <link rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%232460c0'/%3E%3Cpath d='M21 43a9 9 0 0 1-1-17.9A12 12 0 0 1 43 23a10 10 0 0 1 1 20z' fill='white'/%3E%3C/svg%3E" />
+    <title>Cloud Drive</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+    html {
+      background: #f5f7fb;
+    }
+    @media (prefers-color-scheme: dark) {
+      html {
+        background: #0d1420;
+      }
+    }
+    .boot {
+      min-height: 100dvh;
+      background: linear-gradient(160deg, #f5f7fb, #e6eefc);
+    }
+    @media (prefers-color-scheme: dark) {
+      .boot {
+        background: linear-gradient(160deg, #0d1420, #1c3558);
+      }
+    }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div class="boot" aria-hidden="true"></div>
+    </div>
+    <noscript>Cloud Drive needs JavaScript to run.</noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
