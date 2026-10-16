@@ -30,7 +30,6 @@ Send files to your own bot, keep them in your own channel, and organise everythi
 
 </div>
 
-
 ## Table of contents
 
 - [Why Cloud Drive](#why-cloud-drive)

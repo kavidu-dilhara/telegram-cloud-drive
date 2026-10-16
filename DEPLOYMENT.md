@@ -24,8 +24,8 @@ times.
 ## Step 1. Fork the repository
 
 1. Open this repository on GitHub and click **Fork** (top right), then **Create fork**.
-2. You now have your own copy at `https://github.com/kavidu-dilhara/telegram-cloud-drive`. Every later step uses
-   this fork.
+2. You now have your own copy at `https://github.com/kavidu-dilhara/telegram-cloud-drive`. Every later step
+   uses this fork.
 
 **Checkpoint:** your fork shows `src`, `frontend`, `supabase` and `README.md`. Never add a file named `.env`
 to the fork; your secrets go into the hosting dashboards instead (step 7).
