@@ -571,4 +571,215 @@ export default function FilesPage() {
           placeholder="Extension (pdf, zip…)"
         />
         <select
-          aria-labe
+          aria-label="Sort files"
+          value={sort}
+          onChange={(event) => setSort(event.target.value as Settings["default_sort"])}
+        >
+          <option value="newest">Newest first</option>
+          <option value="oldest">Oldest first</option>
+          <option value="name">Name A–Z</option>
+          <option value="size">Largest first</option>
+        </select>
+        {(query || type || extension) && (
+          <button
+            type="button"
+            className="btn btn-quiet"
+            onClick={() => {
+              setQuery("");
+              setType("");
+              setExtension("");
+            }}
+          >
+            <X size={14} aria-hidden="true" /> Clear filters
+          </button>
+        )}
+      </div>
+
+      <nav className="breadcrumbs" aria-label="Folder path">
+        <button
+          type="button"
+          onClick={() => setFolderId(null)}
+          aria-current={folderId === null ? "page" : undefined}
+          className={cx(folderId === null && "current")}
+        >
+          My files
+        </button>
+        {breadcrumbs.map((folder) => (
+          <span key={folder.id}>
+            <ChevronRight size={14} aria-hidden="true" />
+            <button
+              type="button"
+              onClick={() => setFolderId(folder.id)}
+              aria-current={folder.id === folderId ? "page" : undefined}
+              className={cx(folder.id === folderId && "current")}
+            >
+              {folder.name}
+            </button>
+          </span>
+        ))}
+      </nav>
+      {debouncedQuery && (
+        <p className="scope-note" role="status">Showing results from all folders for “{debouncedQuery}”.</p>
+      )}
+
+      {selectedFiles.size + selectedFolders.size > 0 && (
+        <div className="selection-bar" role="region" aria-label="Selected items">
+          <b>{selectionLabel} selected</b>
+          <div className="selection-actions">
+            <button
+              type="button"
+              onClick={() =>
+                void moveSelected(false)}
+            >
+              <Move size={15} aria-hidden="true" /> Move
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                void moveSelected(true)}
+            >
+              <Copy size={15} aria-hidden="true" /> Copy
+            </button>
+            {selectedFiles.size > 0 && (
+              <button
+                type="button"
+                className="danger"
+                onClick={() =>
+                  void trashFiles(
+                    [...selectedFiles],
+                    `${selectedFiles.size} file${selectedFiles.size === 1 ? "" : "s"}`,
+                  ).then(clearSelection)}
+              >
+                <Trash2 size={15} aria-hidden="true" /> Trash {selectedFiles.size === 1 ? "file" : "files"}
+              </button>
+            )}
+            {selectedFolders.size > 0 && (
+              <button
+                type="button"
+                className="danger"
+                onClick={() => void deleteFolders(chosenFolders).then(clearSelection)}
+              >
+                <Trash2 size={15} aria-hidden="true" /> Delete{" "}
+                {selectedFolders.size === 1 ? "folder" : "folders"}
+              </button>
+            )}
+            <button
+              type="button"
+              className="icon-button on-dark"
+              aria-label="Clear selection"
+              onClick={clearSelection}
+            >
+              <X size={16} aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {error && (
+        <div className="banner banner-error" role="alert">
+          <span>{error}</span>
+          <button type="button" className="btn btn-quiet" onClick={refresh}>Try again</button>
+        </div>
+      )}
+
+      <div className="card" aria-busy={loading}>
+        {loading && <div className="progress" role="progressbar" aria-label="Loading files" />}
+        <div className="section-label">
+          {filtering
+            ? `${total} matching file${total === 1 ? "" : "s"}`
+            : currentFolder
+            ? "Folder contents"
+            : "Top level"}
+        </div>
+        {loading && !items.length && !visibleFolders.length ? <SkeletonRows /> : empty
+          ? (
+            <EmptyState
+              icon={<Folder size={38} aria-hidden="true" />}
+              title={filtering ? "No files match" : "This folder is empty"}
+              text={filtering
+                ? "Try a different search or clear the filters."
+                : "Create a folder, or send a file to your Telegram bot."}
+            />
+          )
+          : (
+            <ul className={cx("list", view === "grid" && "grid-view")}>
+              {visibleFolders.map((folder) => (
+                <FolderItem
+                  key={folder.id}
+                  name={folder.name}
+                  selected={selectedFolders.has(folder.id)}
+                  onSelect={() => toggle(setSelectedFolders, folder.id)}
+                  onOpen={() => setFolderId(folder.id)}
+                  actions={
+                    <PopupMenu label={`Actions for folder ${folder.name}`} items={folderMenu(folder)} />
+                  }
+                />
+              ))}
+              {items.map((file) => (
+                <FileItem
+                  key={file.id}
+                  file={file}
+                  leading={
+                    <SelectBox
+                      checked={selectedFiles.has(file.id)}
+                      onChange={() => toggle(setSelectedFiles, file.id)}
+                      label={`Select ${file.file_name}`}
+                    />
+                  }
+                  actions={
+                    <>
+                      <button
+                        type="button"
+                        className={cx("favorite-button", favoriteIds.has(file.id) && "is-favorite")}
+                        aria-pressed={favoriteIds.has(file.id)}
+                        aria-label={favoriteIds.has(file.id)
+                          ? `Remove ${file.file_name} from Favorites`
+                          : `Add ${file.file_name} to Favorites`}
+                        onClick={() => void toggleFavorite(file)}
+                      >
+                        <Star
+                          size={18}
+                          aria-hidden="true"
+                          fill={favoriteIds.has(file.id) ? "currentColor" : "none"}
+                        />
+                      </button>
+                      <PopupMenu label={`Actions for ${file.file_name}`} items={fileMenu(file)} />
+                    </>
+                  }
+                />
+              ))}
+            </ul>
+          )}
+        {hasMore && (
+          <div className="load-more-wrap">
+            <button type="button" className="btn" disabled={loadingMore} onClick={() => void loadMore()}>
+              {loadingMore ? "Loading…" : "Load more files"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {preview && (
+        <Modal title={preview.file_name} onClose={() => setPreview(null)} wide>
+          <div className="preview-frame">
+            {!previewUrl && !previewFailed && (
+              <div className="progress" role="progressbar" aria-label="Loading preview" />
+            )}
+            {previewFailed
+              ? (
+                <EmptyState
+                  icon={<Eye size={32} aria-hidden="true" />}
+                  title="Preview unavailable"
+                  text="Telegram could not provide this image right now. Try again later."
+                />
+              )
+              : (
+                previewUrl && <img src={previewUrl} alt={preview.file_name} />
+              )}
+          </div>
+          <p className="hint">Image preview · {formatSize(Number(preview.file_size))}</p>
+        </Modal>
+      )}
+    </>
+  );
+}
