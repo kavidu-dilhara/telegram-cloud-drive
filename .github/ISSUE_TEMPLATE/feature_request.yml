@@ -1,0 +1,61 @@
+name: Feature request
+description: Suggest an idea or an improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea! Please describe the problem you want solved, not only the solution.
+        Keep in mind that Cloud Drive is a single-owner app: files go in and come back out through the Telegram bot.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part would this change?
+      options:
+        - Mini App (screens and buttons)
+        - Telegram bot (commands, messages)
+        - Backend / API
+        - Database
+        - Deployment and documentation
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Explain the situation where you wish the app did something different.
+      placeholder: "I often need to ... but currently I have to ..."
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Your suggested solution
+      description: What should the app do? Sketches or examples are welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+    validations:
+      required: false
+  - type: dropdown
+    id: importance
+    attributes:
+      label: How important is this to you?
+      options:
+        - Nice to have
+        - Would use it often
+        - Blocks my use of the app
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and this has not been requested yet.
+          required: true
