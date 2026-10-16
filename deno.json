@@ -1,0 +1,30 @@
+{
+  "version": "1.0.0",
+  "nodeModulesDir": "auto",
+  "tasks": {
+    "dev": "deno run -A --watch --env-file=.env src/main.ts",
+    "start": "deno run -A src/main.ts",
+    "check": "deno check src/main.ts scripts/set_webhook.ts",
+    "test": "deno test -A src",
+    "lint": "deno lint",
+    "fmt": "deno fmt",
+    "webhook": "deno run -A --env-file=.env scripts/set_webhook.ts"
+  },
+  "imports": {
+    "@grammyjs/auto-retry": "npm:@grammyjs/auto-retry@^2.0.0",
+    "@grammyjs/transformer-throttler": "npm:@grammyjs/transformer-throttler@^1.2.1",
+    "@supabase/supabase-js": "npm:@supabase/supabase-js@^2.57.0",
+    "grammy": "npm:grammy@^1.35.0",
+    "grammy/types": "npm:grammy@^1.35.0/types",
+    "hono": "npm:hono@^4.9.0"
+  },
+  "fmt": {
+    "lineWidth": 110,
+    "indentWidth": 2,
+    "semiColons": true,
+    "singleQuote": false,
+    "exclude": ["frontend"]
+  },
+  "lint": { "rules": { "exclude": ["no-explicit-any"] }, "exclude": ["frontend"] },
+  "exclude": ["frontend/node_modules", "frontend/dist"]
+}
