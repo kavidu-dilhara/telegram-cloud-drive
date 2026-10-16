@@ -5,10 +5,10 @@
 **A private cloud drive that lives inside Telegram.**\
 Send files to your own bot, keep them in your own channel, and organise everything from a Mini App.
 
-[![CI](https://github.com/kavidu-dilhara/telegram-cloud-drive/actions/workflows/ci.yml/badge.svg)](https://github.com/kavidu-dilhara/telegram-cloud-drive/actions/workflows/ci.yml)
+![GitHub Repo stars](https://img.shields.io/github/stars/kavidu-dilhara/telegram-cloud-drive)
+![GitHub watchers](https://img.shields.io/github/watchers/kavidu-dilhara/telegram-cloud-drive)
+![GitHub forks](https://img.shields.io/github/forks/kavidu-dilhara/telegram-cloud-drive)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/kavidu-dilhara/telegram-cloud-drive?display_name=tag&sort=semver)](https://github.com/kavidu-dilhara/telegram-cloud-drive/releases)
-[![Stars](https://img.shields.io/github/stars/kavidu-dilhara/telegram-cloud-drive?style=flat)](https://github.com/kavidu-dilhara/telegram-cloud-drive/stargazers)
 ![Deno](https://img.shields.io/badge/backend-Deno%20%2B%20Hono-black?logo=deno)
 ![React](https://img.shields.io/badge/frontend-React%20%2B%20Vite-61dafb?logo=react&logoColor=white)
 ![Supabase](https://img.shields.io/badge/database-Supabase-3ecf8e?logo=supabase&logoColor=white)
@@ -30,10 +30,6 @@ Send files to your own bot, keep them in your own channel, and organise everythi
 
 </div>
 
-> Replace `kavidu-dilhara` in the badges and buttons above with your GitHub username after you publish the
-> repository.
-
----
 
 ## Table of contents
 
