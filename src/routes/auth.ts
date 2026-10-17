@@ -4,7 +4,14 @@ import { allowedOrigins, config } from "../config.ts";
 import { db, logAction } from "../db.ts";
 import { type AppEnv, type Ctx, fail, jsonBody } from "../http.ts";
 import { maybeRunMaintenance } from "../maintenance.ts";
-import { clearFailures, clientIp, isLimited, recordFailure } from "../rateLimit.ts";
+import {
+  clearFailures,
+  clientIp,
+  isLimited,
+  type LimitRule,
+  recordFailure,
+  ThrottleUnavailableError,
+} from "../rateLimit.ts";
 import {
   burnPasswordCheck,
   createSession,
@@ -21,6 +28,27 @@ import {
 const COOKIE = "drive_session";
 const loginName = (value: unknown): value is string =>
   typeof value === "string" && /^[a-zA-Z0-9._-]{3,64}$/.test(value);
+
+/** A ready response when the attempt must be refused: limit reached (429) or throttling unavailable (503). */
+async function throttleBlock(
+  c: import("hono").Context,
+  rules: LimitRule[],
+  tooMany: string,
+): Promise<Response | null> {
+  try {
+    if (!await isLimited(rules)) return null;
+    c.header("Retry-After", "900");
+    return fail(c, tooMany, 429);
+  } catch (error) {
+    if (!(error instanceof ThrottleUnavailableError)) throw error;
+    c.header("Retry-After", "60");
+    return fail(
+      c,
+      "Sign-in is temporarily unavailable. Try again in a minute, or open Cloud Drive from Telegram.",
+      503,
+    );
+  }
+}
 
 const setSessionCookie = (c: Ctx | import("hono").Context, token: string) =>
   c.header(
@@ -135,17 +163,15 @@ publicAuth.post("/password/login", async (c) => {
     return fail(c, "Enter a valid username and password");
   }
   const username = body.username.toLowerCase();
-  const ip = clientIp(c.req.raw.headers);
+  const ip = clientIp(c);
   const keys = [`user:${username}`, `ip:${ip}`, "global"];
   const rules = [{ key: keys[0], max: 10 }, { key: keys[1], max: 10 }, { key: keys[2], max: 40 }];
-  if (await isLimited(rules)) {
-    c.header("Retry-After", "900");
-    return fail(
-      c,
-      "Too many sign-in attempts. Try again in 15 minutes, or open Cloud Drive from Telegram.",
-      429,
-    );
-  }
+  const blocked = await throttleBlock(
+    c,
+    rules,
+    "Too many sign-in attempts. Try again in 15 minutes, or open Cloud Drive from Telegram.",
+  );
+  if (blocked) return blocked;
 
   const row = await ownerRow();
   const known = Boolean(
@@ -267,9 +293,12 @@ privateAuth.patch("/password", async (c) => {
   const freshTelegram = claims.via === "telegram" && Date.now() - claims.iat < FRESH_TELEGRAM_MS;
   if (!freshTelegram) {
     const limitKey = "pwchange";
-    if (await isLimited([{ key: limitKey, max: 5 }])) {
-      return fail(c, "Too many attempts. Try again in 15 minutes.", 429);
-    }
+    const blocked = await throttleBlock(
+      c,
+      [{ key: limitKey, max: 5 }],
+      "Too many attempts. Try again in 15 minutes.",
+    );
+    if (blocked) return blocked;
     const ok = typeof body.current_password === "string" &&
       await verifyPassword(
         body.current_password,
