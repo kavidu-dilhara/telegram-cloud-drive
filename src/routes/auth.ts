@@ -58,30 +58,40 @@ const setSessionCookie = (c: Ctx | import("hono").Context, token: string) =>
 const clearSessionCookie = (c: Ctx | import("hono").Context) =>
   c.header("Set-Cookie", `${COOKIE}=; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=0`);
 
-// ---- session version (revocation) with a short cache -----------------------
-let versionCache: { value: number; at: number } | null = null;
+// ---- session version (revocation) ------------------------------------------
+// Read from the database on every check, never cached: "sign out everywhere" and credential changes must
+// take effect on every backend instance immediately.
 
-export async function currentSessionVersion(force = false): Promise<number> {
-  if (!force && versionCache && Date.now() - versionCache.at < 5000) return versionCache.value;
-  const { data } = await db.from("users").select("session_version").eq("telegram_id", config.ownerId)
+/** Thrown when the session version cannot be read, so callers refuse instead of guessing. */
+export class SessionStoreUnavailableError extends Error {
+  constructor(message = "Session version is unavailable") {
+    super(message);
+    this.name = "SessionStoreUnavailableError";
+  }
+}
+
+export async function currentSessionVersion(): Promise<number> {
+  const { data, error } = await db.from("users").select("session_version").eq("telegram_id", config.ownerId)
     .maybeSingle();
-  versionCache = { value: Number(data?.session_version ?? 1), at: Date.now() };
-  return versionCache.value;
+  if (error) {
+    console.error("Unable to read the session version", error.message);
+    throw new SessionStoreUnavailableError();
+  }
+  return Number(data?.session_version ?? 1);
 }
 
 async function bumpSessionVersion(): Promise<number> {
-  const next = (await currentSessionVersion(true)) + 1;
+  const next = (await currentSessionVersion()) + 1;
   const { error } = await db.from("users").update({ session_version: next }).eq(
     "telegram_id",
     config.ownerId,
   );
   if (error) throw error;
-  versionCache = { value: next, at: Date.now() };
   return next;
 }
 
 async function issueSession(c: import("hono").Context, via: SessionMethod, version?: number) {
-  const token = await createSession(config.ownerId, version ?? await currentSessionVersion(true), via);
+  const token = await createSession(config.ownerId, version ?? await currentSessionVersion(), via);
   setSessionCookie(c, token);
   return token;
 }
@@ -122,7 +132,14 @@ export const requireAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
   }
   const token = bearer ?? cookie;
   const claims = token ? await verifySession(token) : null;
-  if (!claims || claims.v !== await currentSessionVersion()) return fail(c, "Unauthorized", 401);
+  if (!claims) return fail(c, "Unauthorized", 401);
+  try {
+    if (claims.v !== await currentSessionVersion()) return fail(c, "Unauthorized", 401);
+  } catch (error) {
+    if (!(error instanceof SessionStoreUnavailableError)) throw error;
+    c.header("Retry-After", "5");
+    return fail(c, "Unable to verify your session right now. Try again in a moment.", 503);
+  }
   c.set("session", claims);
   maybeRunMaintenance();
   await next();
@@ -240,7 +257,7 @@ privateAuth.post("/logout-all", async (c) => {
 
 async function saveCredentials(c: Ctx, username: string, password: string) {
   const credentials = await hashPassword(password);
-  const version = (await currentSessionVersion(true)) + 1;
+  const version = (await currentSessionVersion()) + 1;
   const { error } = await db.from("users").update({
     login_username: username,
     password_hash: credentials.hash,
@@ -254,7 +271,6 @@ async function saveCredentials(c: Ctx, username: string, password: string) {
       ? fail(c, "That username is already taken", 409)
       : fail(c, "Unable to save browser credentials", 500);
   }
-  versionCache = { value: version, at: Date.now() };
   // Every older session is revoked; the current device gets a fresh one.
   const token = await issueSession(c, c.get("session").via, version);
   return { token };
