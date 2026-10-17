@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+**Security**
+
+- Per-address login throttling no longer trusts forwarding headers by default. Set `TRUSTED_IP_HEADER` (and
+  `TRUSTED_PROXY_HOPS`) only if your host overwrites them; `X-Forwarded-For` is read from the right.
+- Login throttling fails closed: if the failure counters cannot be read or written, sign-in answers 503
+  instead of skipping the limit, and the error is logged.
+- JSON request bodies are capped (16 KB for sign-in routes, 64 KB elsewhere) and answer 413 before parsing.
+
 ## 1.0.0
 
 First public release.
