@@ -2,6 +2,8 @@
 -- Run this file once in Supabase -> SQL Editor.
 --
 -- Safe to run again: every statement is "if not exists" / "create or replace", and the whole script runs as ONE
+-- transaction, so if anything fails nothing is half-created.
+--
 -- All access goes through the Deno backend with the service-role key.
 -- Row-level security is enabled on every table and no policies exist, so the public (anon) key can read nothing.
 
