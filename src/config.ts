@@ -15,6 +15,16 @@ const positiveInt = (key: string, fallback: number) => {
 
 const origin = (value: string | undefined) => value?.replace(/\/+$/, "");
 
+/** Header that carries the real client address, only when the hosting platform sets or overwrites it. */
+const trustedIpHeader = (value: string | undefined): "cf-connecting-ip" | "x-forwarded-for" | undefined => {
+  const header = value?.toLowerCase();
+  if (header === undefined) return undefined;
+  if (header !== "cf-connecting-ip" && header !== "x-forwarded-for") {
+    throw new Error("TRUSTED_IP_HEADER must be empty, cf-connecting-ip or x-forwarded-for");
+  }
+  return header;
+};
+
 export const config = {
   botToken: required("BOT_TOKEN"),
   ownerId: Number(required("BOT_OWNER_ID")),
@@ -29,6 +39,8 @@ export const config = {
   trashRetentionDays: positiveInt("TRASH_RETENTION_DAYS", 30),
   activityRetentionDays: positiveInt("ACTIVITY_RETENTION_DAYS", 30),
   port: positiveInt("PORT", 8000),
+  trustedIpHeader: trustedIpHeader(optional("TRUSTED_IP_HEADER")),
+  trustedProxyHops: positiveInt("TRUSTED_PROXY_HOPS", 1),
 };
 
 if (!Number.isSafeInteger(config.ownerId) || !Number.isSafeInteger(config.channelId)) {
@@ -45,3 +57,4 @@ if (!/^https:\/\//i.test(config.miniAppUrl)) throw new Error("MINI_APP_URL must 
 
 /** Browser origins allowed to call the API. */
 export const allowedOrigins = [config.miniAppUrl, ...(config.devOrigin ? [config.devOrigin] : [])];
+  
