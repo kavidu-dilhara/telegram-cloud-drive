@@ -8,6 +8,9 @@
   `TRUSTED_PROXY_HOPS`) only if your host overwrites them; `X-Forwarded-For` is read from the right.
 - Login throttling fails closed: if the failure counters cannot be read or written, sign-in answers 503
   instead of skipping the limit, and the error is logged.
+- Sign-out everywhere and credential changes now revoke sessions immediately on every backend instance (the
+  5-second session-version cache is gone). If the version cannot be read, requests answer 503 instead of
+  falling back to version 1.
 - JSON request bodies are capped (16 KB for sign-in routes, 64 KB elsewhere) and answer 413 before parsing.
 
 ## 1.0.0
