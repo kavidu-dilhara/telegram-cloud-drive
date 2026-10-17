@@ -1,12 +1,6 @@
 name: CI
-run-name: CI - ${{ inputs.note || github.ref_name }} (${{ substr(github.sha, 0, 7) }})
 on:
   workflow_dispatch:
-    inputs:
-      note:
-        description: Optional title for this run, for example your commit message
-        required: false
-        type: string
 
 jobs:
   backend:
