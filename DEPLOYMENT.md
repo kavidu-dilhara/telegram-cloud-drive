@@ -100,7 +100,9 @@ characters and they must not match.
    | `MINI_APP_URL`              | `https://placeholder.example` for now; you fix it in step 9 |
 
    The remaining lines in `.env.example` (`APP_URL`, `BOT_USERNAME`, `DEV_ORIGIN`, `TRASH_RETENTION_DAYS`,
-   `ACTIVITY_RETENTION_DAYS`, `PORT`) are optional. `APP_URL` is only used by the webhook command in step 10.
+   `ACTIVITY_RETENTION_DAYS`, `PORT`, `TRUSTED_IP_HEADER`, `TRUSTED_PROXY_HOPS`) are optional. `APP_URL` is
+   only used by the webhook command in step 10. Leave `TRUSTED_IP_HEADER` empty unless you know your host
+   overwrites that header so visitors cannot forge it; the login is protected per account either way.
 
 4. Deploy and copy the backend address, for example `https://my-drive.deno.dev`. Save it as **APP_URL**.
 
