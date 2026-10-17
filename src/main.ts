@@ -55,4 +55,3 @@ app.onError((error, c) => {
 
 scheduleMaintenance();
 Deno.serve({ port: config.port }, app.fetch);
-                                      

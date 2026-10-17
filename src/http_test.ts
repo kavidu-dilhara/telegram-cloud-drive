@@ -53,4 +53,3 @@ Deno.test("body limit: declared Content-Length over the limit is refused", async
   const response = await post("/api/auth/echo", "{}", { "Content-Length": String(AUTH_BODY_LIMIT + 1) });
   assert.equal(response.status, 413);
 });
-  

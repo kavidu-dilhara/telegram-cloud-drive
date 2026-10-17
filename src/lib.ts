@@ -158,5 +158,4 @@ export function resolveClientIp(
     return isIP(value) ? value : fallback;
   }
   return fallback;
-                           }
-  
+}

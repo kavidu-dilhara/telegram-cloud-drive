@@ -57,4 +57,3 @@ if (!/^https:\/\//i.test(config.miniAppUrl)) throw new Error("MINI_APP_URL must 
 
 /** Browser origins allowed to call the API. */
 export const allowedOrigins = [config.miniAppUrl, ...(config.devOrigin ? [config.devOrigin] : [])];
-  

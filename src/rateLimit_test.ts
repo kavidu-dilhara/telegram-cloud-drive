@@ -109,4 +109,3 @@ Deno.test("password login answers 429 once a limit is reached", async () => {
     restore();
   }
 });
-    

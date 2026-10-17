@@ -131,4 +131,3 @@ Deno.test("resolveClientIp: x-forwarded-for is read from the right, not the forg
   );
   assert.equal(resolveClientIp(new Headers({ "X-Forwarded-For": "junk" }), "10.0.0.5", options), "10.0.0.5");
 });
-                   
