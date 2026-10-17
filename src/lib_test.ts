@@ -9,6 +9,7 @@ import {
   isUuid,
   parseIds,
   renameKeepingExtension,
+  resolveClientIp,
   safeEqualText,
   sha256Hex,
   singleLine,
@@ -98,3 +99,36 @@ Deno.test("sha256Hex and safeEqualText", async () => {
   assert.equal(safeEqualText("same", "diff"), false);
   assert.equal(safeEqualText("short", "longer-text"), false);
 });
+
+Deno.test("resolveClientIp: forwarding headers are ignored unless a trusted header is configured", () => {
+  const headers = new Headers({ "CF-Connecting-IP": "6.6.6.6", "X-Forwarded-For": "7.7.7.7, 8.8.8.8" });
+  assert.equal(resolveClientIp(headers, "10.0.0.5"), "10.0.0.5");
+  assert.equal(resolveClientIp(headers, undefined), "unknown");
+});
+
+Deno.test("resolveClientIp: cf-connecting-ip is used only when configured and valid", () => {
+  const options = { header: "cf-connecting-ip" as const };
+  assert.equal(
+    resolveClientIp(new Headers({ "CF-Connecting-IP": "203.0.113.7" }), "10.0.0.5", options),
+    "203.0.113.7",
+  );
+  assert.equal(
+    resolveClientIp(new Headers({ "CF-Connecting-IP": "not-an-ip" }), "10.0.0.5", options),
+    "10.0.0.5",
+  );
+  assert.equal(resolveClientIp(new Headers(), "10.0.0.5", options), "10.0.0.5");
+});
+
+Deno.test("resolveClientIp: x-forwarded-for is read from the right, not the forgeable left", () => {
+  const options = { header: "x-forwarded-for" as const };
+  const forged = new Headers({ "X-Forwarded-For": "1.2.3.4, 198.51.100.20" });
+  assert.equal(resolveClientIp(forged, "10.0.0.5", options), "198.51.100.20");
+  assert.equal(resolveClientIp(forged, "10.0.0.5", { ...options, hops: 2 }), "1.2.3.4");
+  assert.equal(resolveClientIp(forged, "10.0.0.5", { ...options, hops: 3 }), "10.0.0.5");
+  assert.equal(
+    resolveClientIp(new Headers({ "X-Forwarded-For": "2001:db8::1" }), "10.0.0.5", options),
+    "2001:db8::1",
+  );
+  assert.equal(resolveClientIp(new Headers({ "X-Forwarded-For": "junk" }), "10.0.0.5", options), "10.0.0.5");
+});
+                   
