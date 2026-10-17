@@ -3,7 +3,7 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { webhookCallback } from "grammy";
 import { allowedOrigins, config } from "./config.ts";
-import { type AppEnv, fail } from "./http.ts";
+import { apiBodyLimit, type AppEnv, fail } from "./http.ts";
 import { safeEqualText } from "./lib.ts";
 import { scheduleMaintenance } from "./maintenance.ts";
 import { originGuard, privateAuth, publicAuth, requireAuth } from "./routes/auth.ts";
@@ -37,6 +37,7 @@ app.use(
     allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
   }),
 );
+app.use("/api/*", apiBodyLimit);
 app.use("/api/*", originGuard);
 app.route("/api/auth", publicAuth);
 app.use("/api/*", requireAuth);
@@ -54,3 +55,4 @@ app.onError((error, c) => {
 
 scheduleMaintenance();
 Deno.serve({ port: config.port }, app.fetch);
+                                      
