@@ -1,5 +1,7 @@
 /** Pure helpers with no side effects, shared by routes, the bot and the tests. */
 
+import { isIP } from "node:net";
+
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export const isUuid = (value: unknown): value is string =>
@@ -126,3 +128,35 @@ export function base64UrlDecode(value: string) {
   const padded = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
   return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
 }
+
+export interface ClientIpOptions {
+  /** Header the hosting platform sets or overwrites. Leave unset to use the connection address only. */
+  header?: "cf-connecting-ip" | "x-forwarded-for";
+  /** Trusted proxies that append to X-Forwarded-For (default 1). */
+  hops?: number;
+}
+
+/**
+ * The address used for per-address throttling. Forwarding headers can be forged by the caller, so they are
+ * ignored unless `header` says the platform controls them. For X-Forwarded-For the entry added by the
+ * outermost trusted proxy is used (counted from the right), never the caller-supplied left-most one.
+ * Anything that is not a valid IP address falls back to the connection address.
+ */
+export function resolveClientIp(
+  headers: Headers,
+  remoteAddress: string | undefined,
+  options: ClientIpOptions = {},
+): string {
+  const fallback = remoteAddress?.trim().slice(0, 64) || "unknown";
+  if (options.header === "cf-connecting-ip") {
+    const value = headers.get("cf-connecting-ip")?.trim() ?? "";
+    return isIP(value) ? value : fallback;
+  }
+  if (options.header === "x-forwarded-for") {
+    const parts = (headers.get("x-forwarded-for") ?? "").split(",").map((part) => part.trim());
+    const value = parts[parts.length - (options.hops ?? 1)] ?? "";
+    return isIP(value) ? value : fallback;
+  }
+  return fallback;
+                           }
+  
