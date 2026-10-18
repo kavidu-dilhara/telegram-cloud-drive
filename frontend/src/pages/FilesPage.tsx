@@ -86,6 +86,7 @@ export default function FilesPage() {
   // Load the first page whenever the view changes. A newer request always wins over an older one.
   useEffect(() => {
     const id = ++requestId.current;
+    setLoadingMore(false);
     setLoading(true);
     setError("");
     setSelectedFiles(new Set());
@@ -155,18 +156,20 @@ export default function FilesPage() {
   }
 
   async function loadMore() {
+    const id = requestId.current; // the view this request belongs to
     setLoadingMore(true);
     try {
       const result = await api<Paged<FileRow>>(`/api/files?${params}&page=${page + 1}`);
+      if (id !== requestId.current) return; // the folder, search or filters changed meanwhile
       setItems((
         old,
       ) => [...old, ...result.items.filter((item) => !old.some((existing) => existing.id === item.id))]);
       setPage(result.page);
       setHasMore(result.has_more);
     } catch (caught) {
-      toast(messageOf(caught, "Unable to load more files"), { kind: "error" });
+      if (id === requestId.current) toast(messageOf(caught, "Unable to load more files"), { kind: "error" });
     } finally {
-      setLoadingMore(false);
+      if (id === requestId.current) setLoadingMore(false);
     }
   }
 
