@@ -114,10 +114,20 @@ const ownerRow = async () => {
 
 // ---- middleware --------------------------------------------------------------
 
-/** Rejects browser requests from any origin other than the Mini App (and the optional dev origin). */
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+/**
+ * Rejects requests from any origin other than the Mini App (and the optional dev origin). Browsers always
+ * send Origin on state-changing requests, so those must carry an allowed one; the only exception is a
+ * request the browser itself marks as same-origin (Sec-Fetch-Site). Reads without Origin stay allowed.
+ */
 export const originGuard: MiddlewareHandler = async (c, next) => {
   const origin = c.req.header("Origin");
-  if (origin && !allowedOrigins.includes(origin)) return fail(c, "Forbidden origin", 403);
+  if (origin) {
+    if (!allowedOrigins.includes(origin)) return fail(c, "Forbidden origin", 403);
+  } else if (!SAFE_METHODS.has(c.req.method) && c.req.header("Sec-Fetch-Site") !== "same-origin") {
+    return fail(c, "Forbidden origin", 403);
+  }
   await next();
 };
 

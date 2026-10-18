@@ -119,9 +119,13 @@ folderRoutes.post("/folders/:id/copy", async (c) => {
   const body = await jsonBody<{ parent_id?: unknown }>(c);
   const parentId = body?.parent_id === undefined ? null : body.parent_id;
   if (parentId !== null && !isUuid(parentId)) return fail(c, "Invalid destination folder");
+  if (typeof parentId === "string" && descendants(id, await allFolders()).has(parentId)) {
+    return fail(c, "A folder cannot be copied inside itself");
+  }
   const { data, error } = await db.rpc("copy_folder", { p_id: id, p_parent: parentId });
   if (error) {
     if (error.code === "P0002") return fail(c, "Folder or destination not found", 404);
+    if (error.code === "22023") return fail(c, "A folder cannot be copied inside itself");
     return fail(c, "Unable to copy folder", 500);
   }
   await logAction("folder_copy", undefined, { source_folder_id: id, copied_folder_id: data });

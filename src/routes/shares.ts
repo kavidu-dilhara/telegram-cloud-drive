@@ -34,6 +34,13 @@ shareRoutes.get("/shares", async (c) => {
   return c.json(shares);
 });
 
+/** The file's existing link (oldest first) and its decrypted token, if any. */
+async function lookupShare(fileId: string) {
+  const { data } = await db.from("shares").select("id,share_token_enc,created_at").eq("file_id", fileId)
+    .order("created_at", { ascending: true }).limit(1).maybeSingle();
+  return { row: data, token: data ? await decryptToken(data.share_token_enc) : null };
+}
+
 shareRoutes.post("/files/:id/share", async (c) => {
   const id = c.req.param("id");
   if (!isUuid(id)) return fail(c, "Invalid file id");
@@ -42,9 +49,7 @@ shareRoutes.post("/files/:id/share", async (c) => {
   if (!file) return fail(c, "File not found", 404);
 
   // One link per file: reuse the existing one instead of creating a pile of links.
-  const { data: existing } = await db.from("shares").select("id,share_token_enc,created_at").eq("file_id", id)
-    .limit(1).maybeSingle();
-  const existingToken = await decryptToken(existing?.share_token_enc);
+  const { row: existing, token: existingToken } = await lookupShare(id);
   if (existing && existingToken) {
     return c.json({
       id: existing.id,
@@ -61,7 +66,16 @@ shareRoutes.post("/files/:id/share", async (c) => {
     token_hash: await sha256Hex(token),
     share_token_enc: await encryptToken(token),
   }).select("id,file_id,created_at").single();
-  if (error) return fail(c, "Unable to create share link", 500);
+  if (error) {
+    // A concurrent request created this file's link first (a unique index allows only one): reuse it.
+    if (error.code === "23505") {
+      const { row, token: winner } = await lookupShare(id);
+      if (row && winner) {
+        return c.json({ id: row.id, file_id: id, created_at: row.created_at, url: await shareUrl(winner) });
+      }
+    }
+    return fail(c, "Unable to create share link", 500);
+  }
   await logAction("share_create", id, { file_name: file.file_name });
   return c.json({ ...data, url: await shareUrl(token) }, 201);
 });

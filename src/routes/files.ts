@@ -9,7 +9,7 @@ import {
   PUBLIC_FILE_COLUMNS,
 } from "../db.ts";
 import { type AppEnv, type Ctx, fail, jsonBody } from "../http.ts";
-import { escapeLike, isUuid, parseIds, renameKeepingExtension } from "../lib.ts";
+import { escapeLike, isUuid, parseIds, previewImageType, renameKeepingExtension } from "../lib.ts";
 import { purgeTrash } from "../maintenance.ts";
 import { type ChannelMessage, deleteChannelMessages } from "../telegram.ts";
 
@@ -281,8 +281,8 @@ fileRoutes.get("/files/:id/preview", async (c) => {
     id,
   ).eq("status", "active").maybeSingle();
   if (!file) return fail(c, "File not found", 404);
-  const mime = String(file.mime_type ?? "").toLowerCase();
-  if (!mime.startsWith("image/")) return fail(c, "Only images can be previewed", 415);
+  const mime = previewImageType(file.mime_type);
+  if (!mime) return fail(c, "Only PNG, JPEG, GIF and WebP images can be previewed", 415);
   if (Number(file.file_size ?? 0) >= PREVIEW_LIMIT) {
     return fail(c, "Image preview is limited to files under 2 MB", 413);
   }
@@ -303,6 +303,8 @@ fileRoutes.get("/files/:id/preview", async (c) => {
     "Content-Disposition": `inline; filename="${String(file.file_name).replace(/[\r\n"\\]/g, "_")}"`,
     "Cache-Control": "private, max-age=300",
     "X-Content-Type-Options": "nosniff",
+    // Defence in depth: even if this URL is opened as a page, nothing in it may run or load.
+    "Content-Security-Policy": "default-src 'none'; sandbox",
   };
   const length = image.headers.get("Content-Length");
   if (length) headers["Content-Length"] = length;

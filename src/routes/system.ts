@@ -48,7 +48,7 @@ systemRoutes.get("/settings", async (c) => {
 systemRoutes.patch("/settings", async (c) => {
   const body = await jsonBody<Record<string, unknown>>(c);
   if (!body) return fail(c, "Invalid settings payload");
-  const updates = Object.entries(body).filter(([key]) => key in DEFAULT_SETTINGS);
+  const updates = Object.entries(body).filter(([key]) => Object.hasOwn(DEFAULT_SETTINGS, key));
   if (!updates.length) return fail(c, "No supported settings supplied");
 
   for (const [key, value] of updates) {
