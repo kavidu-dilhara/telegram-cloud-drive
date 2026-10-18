@@ -8,6 +8,7 @@ import {
   formatSize,
   isUuid,
   parseIds,
+  previewImageType,
   renameKeepingExtension,
   resolveClientIp,
   safeEqualText,
@@ -130,4 +131,26 @@ Deno.test("resolveClientIp: x-forwarded-for is read from the right, not the forg
     "2001:db8::1",
   );
   assert.equal(resolveClientIp(new Headers({ "X-Forwarded-For": "junk" }), "10.0.0.5", options), "10.0.0.5");
+});
+
+Deno.test("previewImageType: only safe raster images are previewable, never SVG", () => {
+  assert.equal(previewImageType("image/png"), "image/png");
+  assert.equal(previewImageType("IMAGE/JPEG"), "image/jpeg");
+  assert.equal(previewImageType("image/jpg"), "image/jpeg");
+  assert.equal(previewImageType("image/webp; charset=binary"), "image/webp");
+  assert.equal(previewImageType("image/gif"), "image/gif");
+  for (
+    const unsafe of [
+      "image/svg+xml",
+      "IMAGE/SVG+XML",
+      "image/svg+xml;charset=utf-8",
+      "image/x-icon",
+      "text/html",
+      "",
+      null,
+      undefined,
+    ]
+  ) {
+    assert.equal(previewImageType(unsafe), null);
+  }
 });

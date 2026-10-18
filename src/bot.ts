@@ -115,36 +115,61 @@ async function trashView(page: number) {
   };
 }
 
-async function favoritesView() {
-  const { data: favorites, error } = await db.from("favorites").select("file_id").order("created_at", {
+async function favoritesView(requestedPage = 1) {
+  const { count, error: countError } = await db.from("favorites").select("id", {
+    count: "exact",
+    head: true,
+  });
+  if (countError) throw countError;
+  const pages = Math.max(1, Math.ceil((count ?? 0) / PAGE_SIZE));
+  const page = Math.min(Math.max(1, requestedPage), pages);
+  const from = (page - 1) * PAGE_SIZE;
+  const { data: rows, error } = await db.from("favorites").select("file_id").order("created_at", {
     ascending: false,
-  }).limit(100);
+  }).order("id").range(from, from + PAGE_SIZE - 1);
   if (error) throw error;
-  const favoriteIds = new Set((favorites ?? []).map((row) => row.file_id));
-  const { data: recent } = await db.from("files").select("id,file_name").eq("status", "active").order(
-    "created_at",
-    { ascending: false },
-  ).order("id").limit(PAGE_SIZE);
-  const files = await filesByIds<{ id: string; file_name: string; file_size: number }>(
-    [...favoriteIds],
+  const ids = (rows ?? []).map((row) => row.file_id as string);
+  const found = await filesByIds<{ id: string; file_name: string; file_size: number }>(
+    ids,
     "id,file_name,file_size",
     true,
   );
+  const byId = new Map(found.map((file) => [file.id, file]));
+  const files = ids.flatMap((id) => byId.get(id) ?? []);
 
+  // Every favorite listed on this page gets a button, so each one can be removed from here.
   const keyboard = new InlineKeyboard();
-  for (const file of recent ?? []) {
-    keyboard.text(
-      `${favoriteIds.has(file.id) ? "⭐" : "☆"} ${singleLine(file.file_name, 32)}`,
-      `fav:${file.id}`,
-    ).row();
+  for (const file of files) {
+    keyboard.text(`⭐ ${singleLine(file.file_name, 32)}`, `fav:${file.id}:${page}`).row();
+  }
+  if (page > 1) keyboard.text("‹ Previous", `favs:${page - 1}`);
+  if (page < pages) keyboard.text("Next ›", `favs:${page + 1}`);
+  if (pages > 1) keyboard.row();
+
+  // On the first page, recent files that are not starred yet can be added.
+  if (page === 1) {
+    const { data: recent } = await db.from("files").select("id,file_name").eq("status", "active").order(
+      "created_at",
+      { ascending: false },
+    ).order("id").limit(PAGE_SIZE);
+    const recentIds = (recent ?? []).map((file) => file.id as string);
+    const { data: starred } = recentIds.length
+      ? await db.from("favorites").select("file_id").in("file_id", recentIds)
+      : { data: [] };
+    const starredIds = new Set((starred ?? []).map((row) => row.file_id));
+    for (const file of (recent ?? []).filter((item) => !starredIds.has(item.id)).slice(0, 4)) {
+      keyboard.text(`☆ ${singleLine(file.file_name, 32)}`, `fav:${file.id}:1`).row();
+    }
   }
   keyboard.webApp("Open Favorites", config.miniAppUrl);
+
   const list = files.length
     ? files.map((file, index) =>
-      `${index + 1}. ${singleLine(file.file_name, 60)} · ${formatSize(Number(file.file_size))}`
+      `${from + index + 1}. ${singleLine(file.file_name, 60)} · ${formatSize(Number(file.file_size))}`
     ).join("\n")
     : "No favorites yet.";
-  return { text: `⭐ Favorites\n\n${list}\n\nTap a recent file below to add or remove it.`, keyboard };
+  const title = pages > 1 ? `⭐ Favorites · page ${page} of ${pages}` : "⭐ Favorites";
+  return { text: `${title}\n\n${list}\n\nTap ⭐ to remove a favorite, or ☆ to add a recent file.`, keyboard };
 }
 
 async function sharedView() {
@@ -336,18 +361,28 @@ bot.command("favorites", (ctx) =>
     await ctx.reply(view.text, { reply_markup: view.keyboard });
   }));
 
-bot.callbackQuery(/^fav:([0-9a-f-]{36})$/i, async (ctx) => {
+bot.callbackQuery(/^favs:(\d+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await guarded(ctx, "I couldn't load Favorites.", async () => {
+    const view = await favoritesView(pageNumber(ctx.match[1]));
+    await show(ctx, view.text, view.keyboard, true);
+  });
+});
+
+bot.callbackQuery(/^fav:([0-9a-f-]{36})(?::(\d+))?$/i, async (ctx) => {
   const id = ctx.match[1];
   if (!isUuid(id)) return void await ctx.answerCallbackQuery({ text: "Unknown file" });
   await guarded(ctx, "I couldn't update Favorites.", async () => {
     const { data: existing } = await db.from("favorites").select("id").eq("file_id", id).maybeSingle();
-    if (existing) await db.from("favorites").delete().eq("file_id", id);
-    else {
+    if (existing) {
+      const { error } = await db.from("favorites").delete().eq("file_id", id);
+      if (error) throw error;
+    } else {
       const { error } = await db.from("favorites").upsert({ file_id: id }, { onConflict: "file_id" });
       if (error) throw error;
     }
     await ctx.answerCallbackQuery({ text: existing ? "Removed from Favorites" : "Added to Favorites ⭐" });
-    const view = await favoritesView();
+    const view = await favoritesView(pageNumber(ctx.match[2]));
     await ctx.editMessageText(view.text, { reply_markup: view.keyboard });
   });
 });

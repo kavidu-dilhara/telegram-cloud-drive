@@ -129,6 +129,16 @@ export function base64UrlDecode(value: string) {
   return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
 }
 
+/** Raster types that are safe to show inline. SVG is left out on purpose: opened as a document it can run script. */
+export const PREVIEW_IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/** The canonical preview type for a stored MIME type, or null when the file must not be previewed. */
+export function previewImageType(mime: unknown): string | null {
+  const base = String(mime ?? "").split(";")[0].trim().toLowerCase();
+  const type = base === "image/jpg" ? "image/jpeg" : base;
+  return PREVIEW_IMAGE_TYPES.includes(type) ? type : null;
+}
+
 export interface ClientIpOptions {
   /** Header the hosting platform sets or overwrites. Leave unset to use the connection address only. */
   header?: "cf-connecting-ip" | "x-forwarded-for";
