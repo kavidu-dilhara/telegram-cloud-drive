@@ -85,7 +85,12 @@ create table if not exists shares (
   share_token_enc text,
   created_at timestamptz not null default now()
 );
-create index if not exists shares_file_idx on shares (file_id);
+-- One share link per file. Older duplicates (from simultaneous requests) are removed, keeping the oldest link,
+-- and a unique index keeps it that way.
+delete from shares s using shares k
+  where s.file_id = k.file_id and (s.created_at, s.id) > (k.created_at, k.id);
+drop index if exists shares_file_idx;
+create unique index if not exists shares_file_uq on shares (file_id);
 
 create table if not exists favorites (
   id uuid primary key default gen_random_uuid(),
@@ -192,6 +197,18 @@ begin
     raise exception 'destination_not_found' using errcode = 'P0002';
   end if;
 
+  -- A folder cannot be copied into itself or one of its own subfolders (same rule as moving a folder).
+  if p_parent is not null and exists (
+    with recursive sub as (
+      select id, array[id] as path from folders where id = p_id
+      union all
+      select f.id, sub.path || f.id from folders f join sub on f.parent_id = sub.id where not f.id = any (sub.path)
+    )
+    select 1 from sub where id = p_parent
+  ) then
+    raise exception 'invalid_destination' using errcode = '22023';
+  end if;
+
   v_name := v_src.name || ' (copy)';
   while exists (select 1 from folders where parent_id is not distinct from p_parent and lower(name) = lower(v_name)) loop
     v_name := v_src.name || ' (copy ' || v_suffix || ')';
@@ -202,9 +219,12 @@ begin
 
   for v_row in
     with recursive tree as (
-      select id, parent_id, name, 0 as depth from folders where id = p_id
+      select id, parent_id, name, 0 as depth, array[id] as path from folders where id = p_id
       union all
-      select f.id, f.parent_id, f.name, tree.depth + 1 from folders f join tree on f.parent_id = tree.id
+      -- "path" stops the walk if a damaged hierarchy ever contains a loop
+      select f.id, f.parent_id, f.name, tree.depth + 1, tree.path || f.id
+      from folders f join tree on f.parent_id = tree.id
+      where not f.id = any (tree.path)
     )
     select * from tree order by depth
   loop
