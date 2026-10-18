@@ -12,6 +12,21 @@
   5-second session-version cache is gone). If the version cannot be read, requests answer 503 instead of
   falling back to version 1.
 - JSON request bodies are capped (16 KB for sign-in routes, 64 KB elsewhere) and answer 413 before parsing.
+- Image previews are limited to PNG, JPEG, GIF and WebP. SVG is no longer served inline, and preview responses
+  carry a sandboxing Content-Security-Policy.
+- State-changing API requests (POST, PATCH, DELETE) must now carry an allowed `Origin` header, or be marked
+  same-origin by the browser (`Sec-Fetch-Site`). Reads are unchanged. Scripts calling the API with a token
+  must send `Origin` set to your Mini App URL.
+- Settings only accept the app's own keys (names such as `constructor` are rejected).
+
+**Fixes**
+
+- A folder can no longer be copied into itself or one of its subfolders, and copying a folder is safe even if
+  the folder hierarchy is ever damaged. Re-run `supabase/schema.sql` to update the database function.
+- Only one share link per file is enforced by the database. Re-running `supabase/schema.sql` removes older
+  duplicate links (the oldest is kept) and adds the unique index.
+- Telegram `/favorite` and `/favorites` now list favorites in pages, with a button to remove each one.
+- "Load more files" no longer adds results from an earlier folder, search or filter.
 
 ## 1.0.0
 
