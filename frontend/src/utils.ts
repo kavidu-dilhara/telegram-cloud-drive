@@ -14,8 +14,11 @@ export const formatDate = (iso: string) =>
   new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 
 export const PREVIEW_LIMIT = 2 * 1024 * 1024;
+// Raster formats only: SVG can carry script, so the server refuses to preview it.
+const PREVIEW_TYPES = ["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"];
 export const canPreview = (file: FileRow) =>
-  Boolean(file.mime_type?.toLowerCase().startsWith("image/")) && Number(file.file_size) < PREVIEW_LIMIT;
+  PREVIEW_TYPES.includes((file.mime_type ?? "").split(";")[0].trim().toLowerCase()) &&
+  Number(file.file_size) < PREVIEW_LIMIT;
 
 /** Whole days left before a trashed file is removed automatically. */
 export function daysLeft(deletedAt: string | null, retentionDays: number): number {
