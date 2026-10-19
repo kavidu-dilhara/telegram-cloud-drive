@@ -29,8 +29,23 @@ export interface Paged<T> {
   has_more: boolean;
 }
 
+/** A deleted folder waiting in Trash, with its whole tree saved so it can be restored exactly. */
+export interface TrashedFolder {
+  id: string;
+  folder_id: string;
+  parent_id: string | null;
+  name: string;
+  /** Where it was, including its own name, e.g. "Photos/Trips/k". */
+  path: string;
+  folder_count: number;
+  file_count: number;
+  deleted_at: string;
+}
+
 export interface TrashPage extends Paged<FileRow> {
   retention_days: number;
+  folders: TrashedFolder[];
+  folder_total: number;
 }
 
 export interface Settings {
