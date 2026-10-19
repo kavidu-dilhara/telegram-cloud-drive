@@ -98,19 +98,16 @@ folderRoutes.delete("/folders/:id", async (c) => {
   if (!isUuid(id)) return fail(c, "Invalid folder id");
   const { data: folder } = await db.from("folders").select("name").eq("id", id).maybeSingle();
   if (!folder) return fail(c, "Folder not found", 404);
-  // One transaction in Postgres: files and subfolders move up, the incoming-folder setting is reset, then the folder is deleted.
-  const { error } = await db.rpc("delete_folder", { p_id: id });
+  // One transaction in Postgres: the folder, its subfolders and every file inside go to Trash (files are
+  // restorable), and the incoming-folder setting is reset if it pointed into the deleted tree.
+  const { data, error } = await db.rpc("delete_folder", { p_id: id });
   if (error) {
-    return fail(
-      c,
-      error.code === "23505"
-        ? "A folder with the same name already exists in the parent folder. Rename one of them first."
-        : "Unable to delete folder",
-      error.code === "23505" ? 409 : 500,
-    );
+    if (error.code === "P0002") return fail(c, "Folder not found", 404);
+    return fail(c, "Unable to delete folder", 500);
   }
-  await logAction("folder_delete", undefined, { name: folder.name });
-  return c.json({ ok: true });
+  const trashedFiles = Number(data ?? 0);
+  await logAction("folder_delete", undefined, { name: folder.name, trashed_files: trashedFiles });
+  return c.json({ ok: true, trashed_files: trashedFiles });
 });
 
 folderRoutes.post("/folders/:id/copy", async (c) => {
