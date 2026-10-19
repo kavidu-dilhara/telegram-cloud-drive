@@ -228,7 +228,7 @@ export default function FilesPage() {
       const ok = await dialogs.confirm({
         title: list.length === 1 ? "Delete folder?" : "Delete folders?",
         message:
-          `${names} and everything inside (subfolders and files) will be deleted. Files go to Trash, where you can restore them; restored files return to the top level.`,
+          `${names} and everything inside (subfolders and files) will move to Trash as one item. You can restore it from Trash with everything back where it was.`,
         confirmLabel: "Delete",
         danger: true,
       });
@@ -248,8 +248,8 @@ export default function FilesPage() {
           while (target && gone.has(target)) target = folders.find((item) => item.id === target)?.parent_id ?? null;
           setFolderId(target);
         }
-        const moved = trashed ? ` · ${trashed} ${trashed === 1 ? "file" : "files"} moved to Trash` : "";
-        toast(`${list.length === 1 ? "Folder deleted" : "Folders deleted"}${moved}`, { kind: "success" });
+        const files = trashed ? ` with ${trashed} ${trashed === 1 ? "file" : "files"}` : "";
+        toast(`${list.length === 1 ? "Folder" : "Folders"} moved to Trash${files}`, { kind: "success" });
       },
       "Unable to delete folder",
     );
