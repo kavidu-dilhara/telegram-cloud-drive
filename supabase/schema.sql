@@ -62,6 +62,22 @@ create table if not exists files (
   updated_at timestamptz not null default now(),
   deleted_at timestamptz
 );
+-- Deleted folders waiting in Trash. A deleted folder is removed from "folders" and kept here as one snapshot of its
+-- whole tree (ids, names, structure), so restoring it rebuilds everything exactly. Its files stay in "files" as
+-- trashed rows tagged with trash_entry_id.
+create table if not exists trashed_folders (
+  id uuid primary key default gen_random_uuid(),
+  folder_id uuid not null,                       -- id of the deleted folder (reused when it is restored)
+  parent_id uuid,                                -- its original parent (that folder may be gone or in Trash too)
+  name text not null,
+  path text not null,                            -- original location, e.g. "Photos/Trips/k"
+  tree jsonb not null,                           -- the deleted folder and every subfolder: id, parent_id, name, created_at, depth
+  folder_count integer not null default 1,
+  file_count integer not null default 0,
+  deleted_at timestamptz not null default now()
+);
+create index if not exists trashed_folders_deleted_idx on trashed_folders (deleted_at);
+
 -- A logical copy shares the Telegram message of its original, so only originals are unique per source message.
 create unique index if not exists files_original_source_uq on files (source_chat_id, source_message_id) where copy_of_file_id is null;
 create index if not exists files_name_trgm_idx on files using gin (file_name gin_trgm_ops);
@@ -125,6 +141,10 @@ create table if not exists login_attempts (
 alter table users add column if not exists password_iterations integer not null default 600000;
 alter table users add column if not exists session_version integer not null default 1;
 alter table shares add column if not exists share_token_enc text;
+-- Where a trashed file came from. trashed_folder_id has no foreign key on purpose: that folder may be deleted.
+alter table files add column if not exists trashed_folder_id uuid;
+alter table files add column if not exists trash_entry_id uuid references trashed_folders (id) on delete set null;
+create index if not exists files_trash_entry_idx on files (trash_entry_id) where trash_entry_id is not null;
 
 alter table users enable row level security;
 alter table folders enable row level security;
@@ -134,6 +154,7 @@ alter table favorites enable row level security;
 alter table activity_logs enable row level security;
 alter table settings enable row level security;
 alter table login_attempts enable row level security;
+alter table trashed_folders enable row level security;
 
 -- --------------------------------------------------------------- functions
 -- Multi-step operations run inside one transaction so a failure never leaves half-finished data.
@@ -145,7 +166,8 @@ language sql stable security definer set search_path = public as $$
     (select count(*) from files where status = 'active'),
     coalesce((select sum(file_size) from files where status = 'active'), 0),
     (select count(*) from folders),
-    (select count(*) from files where status = 'trashed');
+    (select count(*) from files where status = 'trashed' and trash_entry_id is null)
+      + (select count(*) from trashed_folders);
 $$;
 
 create or replace function register_login_failure(p_key text, p_window_seconds integer)
@@ -159,37 +181,137 @@ language sql security definer set search_path = public as $$
   returning failures;
 $$;
 
--- Deletes a folder together with all its subfolders. Every active file inside goes to Trash (restorable until it is
--- purged); files already in Trash stay there. Returns how many files were moved to Trash. Restored files return to the
--- top level because their folder no longer exists. The "incoming folder" setting is reset if it pointed into the tree.
+-- Moves a folder and everything inside it to Trash as ONE Trash item. The tree is saved in trashed_folders (ids, names,
+-- structure); active files inside become trashed rows tagged with that item; files that were already in Trash keep their
+-- own Trash entry but remember their folder. The "incoming folder" setting is reset if it pointed into the tree.
 drop function if exists delete_folder(uuid);
 create or replace function delete_folder(p_id uuid)
-returns integer
+returns table (o_entry uuid, o_files integer, o_folders integer)
 language plpgsql security definer set search_path = public as $$
 declare
+  v_root folders%rowtype;
   v_ids uuid[];
-  v_trashed integer;
+  v_tree jsonb;
+  v_path text;
+  v_files integer;
+  v_entry uuid;
+  v_deleted_at timestamptz := now();
 begin
-  if not exists (select 1 from folders where id = p_id) then
+  select * into v_root from folders where id = p_id for update;
+  if not found then
     raise exception 'folder_not_found' using errcode = 'P0002';
   end if;
 
   -- The folder and every folder below it ("path" stops the walk if a damaged hierarchy ever contains a loop).
   with recursive tree as (
-    select id, array[id] as path from folders where id = p_id
+    select id, parent_id, name, created_at, 0 as depth, array[id] as path from folders where id = p_id
     union all
-    select f.id, tree.path || f.id from folders f join tree on f.parent_id = tree.id where not f.id = any (tree.path)
+    select f.id, f.parent_id, f.name, f.created_at, tree.depth + 1, tree.path || f.id
+    from folders f join tree on f.parent_id = tree.id where not f.id = any (tree.path)
   )
-  select array_agg(id) into v_ids from tree;
+  select array_agg(id),
+         jsonb_agg(jsonb_build_object('id', id, 'parent_id', parent_id, 'name', name, 'created_at', created_at, 'depth', depth)
+                   order by depth, lower(name), id)
+    into v_ids, v_tree from tree;
 
-  update files set status = 'trashed', deleted_at = now(), updated_at = now(), folder_id = null
+  -- Where it used to live, for display ("Photos/Trips/k").
+  with recursive up as (
+    select id, parent_id, name, 0 as depth, array[id] as seen from folders where id = p_id
+    union all
+    select f.id, f.parent_id, f.name, up.depth + 1, up.seen || f.id
+    from folders f join up on f.id = up.parent_id where not f.id = any (up.seen)
+  )
+  select string_agg(name, '/' order by depth desc) into v_path from up;
+
+  select count(*) into v_files from files where folder_id = any (v_ids) and status = 'active';
+  insert into trashed_folders (folder_id, parent_id, name, path, tree, folder_count, file_count, deleted_at)
+    values (p_id, v_root.parent_id, v_root.name, v_path, v_tree, cardinality(v_ids), v_files, v_deleted_at)
+    returning id into v_entry;
+
+  update files set trashed_folder_id = folder_id where folder_id = any (v_ids);
+  update files set status = 'trashed', deleted_at = v_deleted_at, updated_at = now(), trash_entry_id = v_entry, folder_id = null
     where folder_id = any (v_ids) and status = 'active';
-  get diagnostics v_trashed = row_count;
   update files set folder_id = null where folder_id = any (v_ids);
   delete from settings where key = 'incoming_folder_id'
     and exists (select 1 from unnest(v_ids) as x where settings.value = to_jsonb(x::text));
   delete from folders where id = any (v_ids);
-  return v_trashed;
+
+  return query select v_entry, v_files, cardinality(v_ids);
+end;
+$$;
+
+-- Restores a Trash item: rebuilds the folder tree with the original ids and names, and puts every file back in its
+-- original folder. If the original parent is gone (or itself in Trash) the folder returns to the top level; if a folder
+-- with the same name already exists there, the restored folder is renamed "name (restored)".
+create or replace function restore_folder(p_entry uuid)
+returns table (o_folder uuid, o_name text, o_files integer, o_folders integer, o_renamed boolean, o_to_root boolean)
+language plpgsql security definer set search_path = public as $$
+declare
+  v_e trashed_folders%rowtype;
+  v_parent uuid;
+  v_to_root boolean := false;
+  v_name text;
+  v_n integer := 1;
+  v_suffix text;
+  v_files integer;
+begin
+  select * into v_e from trashed_folders where id = p_entry for update;
+  if not found then
+    raise exception 'trash_entry_not_found' using errcode = 'P0002';
+  end if;
+
+  if v_e.parent_id is not null then
+    if exists (select 1 from folders where id = v_e.parent_id) then
+      v_parent := v_e.parent_id;
+    else
+      v_to_root := true;
+    end if;
+  end if;
+
+  v_name := v_e.name;
+  while exists (select 1 from folders where parent_id is not distinct from v_parent and lower(name) = lower(v_name)) loop
+    v_n := v_n + 1;
+    v_suffix := case when v_n = 2 then ' (restored)' else ' (restored ' || (v_n - 1) || ')' end;
+    v_name := left(v_e.name, 100 - length(v_suffix)) || v_suffix;
+  end loop;
+
+  insert into folders (id, parent_id, name, created_at, updated_at)
+    select (x ->> 'id')::uuid,
+           case when (x ->> 'depth')::integer = 0 then v_parent else (x ->> 'parent_id')::uuid end,
+           case when (x ->> 'depth')::integer = 0 then v_name else x ->> 'name' end,
+           (x ->> 'created_at')::timestamptz,
+           now()
+    from jsonb_array_elements(v_e.tree) as x;
+
+  update files set status = 'active', deleted_at = null, updated_at = now(),
+                   folder_id = trashed_folder_id, trashed_folder_id = null, trash_entry_id = null
+    where trash_entry_id = p_entry;
+  get diagnostics v_files = row_count;
+  delete from trashed_folders where id = p_entry;
+
+  return query select v_e.folder_id, v_name, v_files, v_e.folder_count, v_name <> v_e.name, v_to_root;
+end;
+$$;
+
+-- Restores files that were trashed on their own, each into its original folder. If that folder is gone (or in Trash)
+-- the file goes to the top level and o_to_root says so. Files inside a deleted folder are restored with the folder.
+create or replace function restore_files(p_ids uuid[])
+returns table (o_id uuid, o_name text, o_to_root boolean)
+language plpgsql security definer set search_path = public as $$
+begin
+  return query
+  with picked as (
+    select id, trashed_folder_id as wanted from files
+    where id = any (p_ids) and status = 'trashed' and trash_entry_id is null
+    for update
+  ), updated as (
+    update files f set status = 'active', deleted_at = null, updated_at = now(),
+      folder_id = coalesce(f.folder_id, (select d.id from folders d where d.id = picked.wanted)),
+      trashed_folder_id = null
+    from picked where f.id = picked.id
+    returning f.id, f.file_name, f.folder_id, picked.wanted
+  )
+  select id, file_name, (wanted is not null and folder_id is null) from updated;
 end;
 $$;
 
@@ -303,7 +425,25 @@ begin
 end;
 $$;
 
--- Permanently deletes trashed files (all, or only those trashed before p_older_than).
+-- Permanently deletes a Trash item (a deleted folder): every file inside it, then the saved tree itself.
+create or replace function purge_trashed_folder(p_entry uuid)
+returns table (tg_chat_id bigint, tg_message_id bigint, orphaned boolean)
+language plpgsql security definer set search_path = public as $$
+declare
+  v_id uuid;
+begin
+  perform 1 from trashed_folders where id = p_entry for update;
+  if not found then
+    raise exception 'trash_entry_not_found' using errcode = 'P0002';
+  end if;
+  for v_id in select id from files where trash_entry_id = p_entry order by created_at, id loop
+    return query select * from purge_file(v_id);
+  end loop;
+  delete from trashed_folders where id = p_entry;
+end;
+$$;
+
+-- Permanently deletes trashed files and deleted folders (all, or only those trashed before p_older_than).
 create or replace function purge_trashed_files(p_older_than timestamptz default null)
 returns table (tg_chat_id bigint, tg_message_id bigint, orphaned boolean)
 language plpgsql security definer set search_path = public as $$
@@ -315,6 +455,8 @@ begin
   loop
     return query select * from purge_file(v_id);
   end loop;
+  -- Their files are gone now (they carry the same deleted_at), so the saved folder trees go too.
+  delete from trashed_folders where p_older_than is null or deleted_at < p_older_than;
 end;
 $$;
 
@@ -323,12 +465,18 @@ revoke execute on function cloud_drive_dashboard() from public, anon, authentica
 revoke execute on function register_login_failure(text, integer) from public, anon, authenticated;
 revoke execute on function delete_folder(uuid) from public, anon, authenticated;
 revoke execute on function copy_folder(uuid, uuid) from public, anon, authenticated;
+revoke execute on function restore_folder(uuid) from public, anon, authenticated;
+revoke execute on function restore_files(uuid[]) from public, anon, authenticated;
+revoke execute on function purge_trashed_folder(uuid) from public, anon, authenticated;
 revoke execute on function purge_file(uuid) from public, anon, authenticated;
 revoke execute on function purge_trashed_files(timestamptz) from public, anon, authenticated;
 grant execute on function cloud_drive_dashboard() to service_role;
 grant execute on function register_login_failure(text, integer) to service_role;
 grant execute on function delete_folder(uuid) to service_role;
 grant execute on function copy_folder(uuid, uuid) to service_role;
+grant execute on function restore_folder(uuid) to service_role;
+grant execute on function restore_files(uuid[]) to service_role;
+grant execute on function purge_trashed_folder(uuid) to service_role;
 grant execute on function purge_file(uuid) to service_role;
 grant execute on function purge_trashed_files(timestamptz) to service_role;
 
