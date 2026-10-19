@@ -21,6 +21,9 @@
 
 **Fixes**
 
+- Deleting a folder now deletes the folder and all its subfolders and sends every file inside to Trash, where
+  it can be restored (restored files return to the top level). Before, only the folder itself was removed and
+  its contents moved up a level. Re-run `supabase/schema.sql` to update the database function.
 - A folder can no longer be copied into itself or one of its subfolders, and copying a folder is safe even if
   the folder hierarchy is ever damaged. Re-run `supabase/schema.sql` to update the database function.
 - Only one share link per file is enforced by the database. Re-running `supabase/schema.sql` removes older
