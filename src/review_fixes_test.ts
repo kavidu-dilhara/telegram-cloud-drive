@@ -231,3 +231,33 @@ Deno.test("preview: SVG and other non-raster types are refused; PNG is served sa
     restore();
   }
 });
+
+// --------------------------------------------------------------- folder delete
+
+Deno.test("folder delete: reports how many files went to Trash and logs it", async () => {
+  const logged: unknown[] = [];
+  try {
+    client.from = (table: string) =>
+      table === "folders"
+        ? { select: () => ({ eq: () => ({ maybeSingle: () => Promise.resolve({ data: { name: "k" } }) }) }) }
+        : { insert: (row: unknown) => (logged.push(row), Promise.resolve({ error: null })) };
+    let called: unknown;
+    client.rpc = (name: string, args: unknown) => {
+      called = { name, args };
+      return Promise.resolve({ data: 3, error: null });
+    };
+    const app = new Hono();
+    app.route("/", folderRoutes);
+    const response = await app.request(`/folders/${A}`, { method: "DELETE" });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, trashed_files: 3 });
+    assert.deepEqual(called, { name: "delete_folder", args: { p_id: A } });
+    assert.deepEqual((logged[0] as { details: unknown }).details, { name: "k", trashed_files: 3 });
+
+    client.rpc = () => Promise.resolve({ data: null, error: { code: "XX000", message: "boom" } });
+    assert.equal((await app.request(`/folders/${A}`, { method: "DELETE" })).status, 500);
+    assert.equal((await app.request(`/folders/not-a-uuid`, { method: "DELETE" })).status, 400);
+  } finally {
+    restore();
+  }
+});
