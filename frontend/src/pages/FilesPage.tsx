@@ -228,7 +228,7 @@ export default function FilesPage() {
       const ok = await dialogs.confirm({
         title: list.length === 1 ? "Delete folder?" : "Delete folders?",
         message:
-          `${names} will be deleted. The files and folders inside move up to the parent folder, nothing is lost.`,
+          `${names} and everything inside (subfolders and files) will be deleted. Files go to Trash, where you can restore them; restored files return to the top level.`,
         confirmLabel: "Delete",
         danger: true,
       });
@@ -236,15 +236,22 @@ export default function FilesPage() {
     }
     await attempt(
       async () => {
-        for (const folder of list) await api(`/api/folders/${folder.id}`, { method: "DELETE" });
-        if (folderId && list.some((folder) => folder.id === folderId)) {
-          setFolderId(
-            list.find((folder) => folder.id === folderId)!.parent_id,
-          );
+        let trashed = 0;
+        for (const folder of list) {
+          const result = await api<{ trashed_files?: number }>(`/api/folders/${folder.id}`, { method: "DELETE" });
+          trashed += result?.trashed_files ?? 0;
         }
+        // The open folder (or one of its parents) may be gone now: go back to the nearest folder that still exists.
+        const gone = new Set(list.flatMap((folder) => [...descendants(folder.id, folders)]));
+        if (folderId && gone.has(folderId)) {
+          let target: string | null = folderId;
+          while (target && gone.has(target)) target = folders.find((item) => item.id === target)?.parent_id ?? null;
+          setFolderId(target);
+        }
+        const moved = trashed ? ` · ${trashed} ${trashed === 1 ? "file" : "files"} moved to Trash` : "";
+        toast(`${list.length === 1 ? "Folder deleted" : "Folders deleted"}${moved}`, { kind: "success" });
       },
       "Unable to delete folder",
-      list.length === 1 ? "Folder deleted" : "Folders deleted",
     );
   }
 
