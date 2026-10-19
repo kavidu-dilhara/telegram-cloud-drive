@@ -98,16 +98,27 @@ folderRoutes.delete("/folders/:id", async (c) => {
   if (!isUuid(id)) return fail(c, "Invalid folder id");
   const { data: folder } = await db.from("folders").select("name").eq("id", id).maybeSingle();
   if (!folder) return fail(c, "Folder not found", 404);
-  // One transaction in Postgres: the folder, its subfolders and every file inside go to Trash (files are
-  // restorable), and the incoming-folder setting is reset if it pointed into the deleted tree.
+  // One transaction in Postgres: the folder and everything inside move to Trash as ONE item (the tree is saved so
+  // a restore rebuilds it exactly), and the incoming-folder setting is reset if it pointed into the deleted tree.
   const { data, error } = await db.rpc("delete_folder", { p_id: id });
   if (error) {
     if (error.code === "P0002") return fail(c, "Folder not found", 404);
     return fail(c, "Unable to delete folder", 500);
   }
-  const trashedFiles = Number(data ?? 0);
-  await logAction("folder_delete", undefined, { name: folder.name, trashed_files: trashedFiles });
-  return c.json({ ok: true, trashed_files: trashedFiles });
+  const row = ((data ?? []) as Array<{ o_entry: string; o_files: number; o_folders: number }>)[0];
+  const trashedFiles = Number(row?.o_files ?? 0);
+  const trashedFolders = Number(row?.o_folders ?? 1);
+  await logAction("folder_delete", undefined, {
+    name: folder.name,
+    trashed_files: trashedFiles,
+    trashed_folders: trashedFolders,
+  });
+  return c.json({
+    ok: true,
+    trash_id: row?.o_entry ?? null,
+    trashed_files: trashedFiles,
+    trashed_folders: trashedFolders,
+  });
 });
 
 folderRoutes.post("/folders/:id/copy", async (c) => {

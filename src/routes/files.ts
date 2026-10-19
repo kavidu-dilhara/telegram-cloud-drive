@@ -170,26 +170,49 @@ fileRoutes.post("/files/batch/trash", async (c) => {
   return c.json({ ok: true, count: data?.length ?? 0 });
 });
 
+/** Restores files that were trashed on their own, each into its original folder (top level if that is gone). */
+async function restoreFiles(ids: string[]) {
+  const { data, error } = await db.rpc("restore_files", { p_ids: ids });
+  const rows = (data ?? []) as Array<{ o_id: string; o_name: string; o_to_root: boolean }>;
+  return { rows, error };
+}
+
 fileRoutes.post("/files/batch/restore", async (c) => {
   const ids = parseIds((await jsonBody<{ file_ids?: unknown }>(c))?.file_ids);
   if (!ids) return fail(c, "file_ids must contain 1-200 valid ids");
-  const { data, error } = await setTrashed(ids, false);
+  const { rows, error } = await restoreFiles(ids);
   if (error) return fail(c, "Unable to restore files", 500);
-  await logAction("restore", undefined, { count: data?.length ?? 0 });
-  return c.json({ ok: true, count: data?.length ?? 0 });
+  await logAction("restore", undefined, { count: rows.length });
+  return c.json({ ok: true, count: rows.length, moved_to_root: rows.filter((row) => row.o_to_root).length });
 });
+
+const TRASH_FOLDER_COLUMNS = "id,folder_id,parent_id,name,path,folder_count,file_count,deleted_at";
 
 fileRoutes.get("/trash", async (c) => {
   const page = Math.max(1, Math.min(100000, Number(c.req.query("page") ?? "1") || 1));
   const limit = Math.max(1, Math.min(100, Number(c.req.query("limit") ?? "50") || 50));
+  // Files inside a deleted folder are part of that folder's Trash item, so they are not listed on their own.
   const { data, error, count } = await db.from("files").select(PUBLIC_FILE_COLUMNS, { count: "exact" })
-    .eq("status", "trashed").order("deleted_at", { ascending: false }).order("id").range(
-      (page - 1) * limit,
-      page * limit - 1,
-    );
+    .eq("status", "trashed").is("trash_entry_id", null).order("deleted_at", { ascending: false }).order("id")
+    .range((page - 1) * limit, page * limit - 1);
   if (error) return fail(c, "Unable to load trash", 500);
+  const { count: folderTotal, error: countError } = await db.from("trashed_folders").select("id", {
+    count: "exact",
+    head: true,
+  });
+  if (countError) return fail(c, "Unable to load trash", 500);
+  let folders: unknown[] = [];
+  if (page === 1) {
+    const result = await db.from("trashed_folders").select(TRASH_FOLDER_COLUMNS).order("deleted_at", {
+      ascending: false,
+    }).order("id").limit(200);
+    if (result.error) return fail(c, "Unable to load trash", 500);
+    folders = result.data ?? [];
+  }
   return c.json({
     items: data ?? [],
+    folders,
+    folder_total: folderTotal ?? 0,
     page,
     limit,
     total: count ?? 0,
@@ -201,19 +224,75 @@ fileRoutes.get("/trash", async (c) => {
 fileRoutes.post("/trash/:id/restore", async (c) => {
   const id = c.req.param("id");
   if (!isUuid(id)) return fail(c, "Invalid file id");
-  const { data, error } = await setTrashed([id], false);
+  const { rows, error } = await restoreFiles([id]);
   if (error) return fail(c, "Unable to restore file", 500);
-  if (!data?.length) return fail(c, "File not found in trash", 404);
-  await logAction("restore", id, { file_name: data[0].file_name });
-  return c.json({ ok: true });
+  if (!rows.length) return fail(c, "File not found in trash", 404);
+  await logAction("restore", id, { file_name: rows[0].o_name });
+  return c.json({ ok: true, moved_to_root: rows[0].o_to_root });
+});
+
+fileRoutes.post("/trash/folders/:id/restore", async (c) => {
+  const id = c.req.param("id");
+  if (!isUuid(id)) return fail(c, "Invalid Trash item id");
+  const { data, error } = await db.rpc("restore_folder", { p_entry: id });
+  if (error) {
+    if (error.code === "P0002") return fail(c, "Folder not found in Trash", 404);
+    return fail(c, "Unable to restore folder", error.code === "23505" ? 409 : 500);
+  }
+  const row = ((data ?? []) as Array<
+    {
+      o_folder: string;
+      o_name: string;
+      o_files: number;
+      o_folders: number;
+      o_renamed: boolean;
+      o_to_root: boolean;
+    }
+  >)[0];
+  if (!row) return fail(c, "Folder not found in Trash", 404);
+  await logAction("folder_restore", undefined, {
+    name: row.o_name,
+    files: row.o_files,
+    folders: row.o_folders,
+  });
+  return c.json({
+    ok: true,
+    folder_id: row.o_folder,
+    name: row.o_name,
+    restored_files: Number(row.o_files),
+    restored_folders: Number(row.o_folders),
+    renamed: row.o_renamed,
+    moved_to_root: row.o_to_root,
+  });
+});
+
+fileRoutes.delete("/trash/folders/:id", async (c) => {
+  const id = c.req.param("id");
+  if (!isUuid(id)) return fail(c, "Invalid Trash item id");
+  const { data: entry } = await db.from("trashed_folders").select("name").eq("id", id).maybeSingle();
+  if (!entry) return fail(c, "Folder not found in Trash", 404);
+  const { data, error } = await db.rpc("purge_trashed_folder", { p_entry: id });
+  if (error) {
+    if (error.code === "P0002") return fail(c, "Folder not found in Trash", 404);
+    return fail(c, "Unable to permanently delete folder", 500);
+  }
+  // Only Telegram messages that no remaining file (for example a copy elsewhere) still points at are removed.
+  const rows = (data ?? []) as Array<ChannelMessage & { orphaned: boolean }>;
+  await deleteChannelMessages(rows.filter((row) => row.orphaned));
+  await logAction("folder_permanent_delete", undefined, { name: entry.name, files: rows.length });
+  return c.json({ ok: true, deleted_files: rows.length });
 });
 
 fileRoutes.delete("/files/:id/permanent", async (c) => {
   const id = c.req.param("id");
   if (!isUuid(id)) return fail(c, "Invalid file id");
-  const { data: file } = await db.from("files").select("file_name,status").eq("id", id).maybeSingle();
+  const { data: file } = await db.from("files").select("file_name,status,trash_entry_id").eq("id", id)
+    .maybeSingle();
   if (!file) return fail(c, "File not found", 404);
   if (file.status !== "trashed") return fail(c, "Move the file to Trash before deleting it permanently", 409);
+  if (file.trash_entry_id) {
+    return fail(c, "This file is inside a deleted folder. Delete that folder from Trash instead.", 409);
+  }
   const { data, error } = await db.rpc("purge_file", { p_id: id });
   if (error) return fail(c, "Unable to permanently delete file", 500);
   const rows = (data ?? []) as Array<ChannelMessage & { orphaned: boolean }>;
