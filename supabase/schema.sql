@@ -159,21 +159,37 @@ language sql security definer set search_path = public as $$
   returning failures;
 $$;
 
--- Deletes a folder: its files and subfolders move up one level and the "incoming folder" setting is reset if needed.
+-- Deletes a folder together with all its subfolders. Every active file inside goes to Trash (restorable until it is
+-- purged); files already in Trash stay there. Returns how many files were moved to Trash. Restored files return to the
+-- top level because their folder no longer exists. The "incoming folder" setting is reset if it pointed into the tree.
+drop function if exists delete_folder(uuid);
 create or replace function delete_folder(p_id uuid)
-returns void
+returns integer
 language plpgsql security definer set search_path = public as $$
 declare
-  v_parent uuid;
+  v_ids uuid[];
+  v_trashed integer;
 begin
-  select parent_id into v_parent from folders where id = p_id;
-  if not found then
+  if not exists (select 1 from folders where id = p_id) then
     raise exception 'folder_not_found' using errcode = 'P0002';
   end if;
-  update files set folder_id = v_parent, updated_at = now() where folder_id = p_id;
-  update folders set parent_id = v_parent, updated_at = now() where parent_id = p_id;
-  delete from settings where key = 'incoming_folder_id' and value = to_jsonb(p_id::text);
-  delete from folders where id = p_id;
+
+  -- The folder and every folder below it ("path" stops the walk if a damaged hierarchy ever contains a loop).
+  with recursive tree as (
+    select id, array[id] as path from folders where id = p_id
+    union all
+    select f.id, tree.path || f.id from folders f join tree on f.parent_id = tree.id where not f.id = any (tree.path)
+  )
+  select array_agg(id) into v_ids from tree;
+
+  update files set status = 'trashed', deleted_at = now(), updated_at = now(), folder_id = null
+    where folder_id = any (v_ids) and status = 'active';
+  get diagnostics v_trashed = row_count;
+  update files set folder_id = null where folder_id = any (v_ids);
+  delete from settings where key = 'incoming_folder_id'
+    and exists (select 1 from unnest(v_ids) as x where settings.value = to_jsonb(x::text));
+  delete from folders where id = any (v_ids);
+  return v_trashed;
 end;
 $$;
 
