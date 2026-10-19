@@ -88,21 +88,41 @@ async function trashView(page: number) {
   const from = (page - 1) * PAGE_SIZE;
   const { data, error, count } = await db.from("files").select("file_name,file_size,deleted_at", {
     count: "exact",
-  }).eq("status", "trashed").order("deleted_at", { ascending: false }).order("id").range(
-    from,
-    from + PAGE_SIZE - 1,
-  );
+  }).eq("status", "trashed").is("trash_entry_id", null).order("deleted_at", { ascending: false }).order("id")
+    .range(from, from + PAGE_SIZE - 1);
   if (error) throw error;
-  if (!data?.length && page === 1) {
+  // Deleted folders are single items in Trash (their files are inside them); shown on the first page.
+  let folderLines: string[] = [];
+  if (page === 1) {
+    const folders = await db.from("trashed_folders").select("name,file_count,folder_count").order(
+      "deleted_at",
+      {
+        ascending: false,
+      },
+    ).order("id").limit(PAGE_SIZE);
+    if (folders.error) throw folders.error;
+    folderLines = (folders.data ?? []).map((folder) => {
+      const files = `${folder.file_count} file${folder.file_count === 1 ? "" : "s"}`;
+      const subfolders = Number(folder.folder_count) - 1;
+      return `📁 ${singleLine(folder.name, 60)} · ${files}${
+        subfolders > 0 ? `, ${subfolders} subfolder${subfolders === 1 ? "" : "s"}` : ""
+      }`;
+    });
+  }
+  if (!data?.length && !folderLines.length && page === 1) {
     return {
-      text: "🗑️ Trash is empty.\n\nFiles you delete are kept here for " + config.trashRetentionDays +
+      text: "🗑️ Trash is empty.\n\nFiles and folders you delete are kept here for " +
+        config.trashRetentionDays +
         " days before they are removed for good.",
       keyboard: appButton("Open Trash"),
     };
   }
-  const lines = (data ?? []).map((file, index) =>
-    `${from + index + 1}. ${singleLine(file.file_name, 60)} · ${formatSize(Number(file.file_size))}`
-  );
+  const lines = [
+    ...folderLines,
+    ...(data ?? []).map((file, index) =>
+      `${from + index + 1}. ${singleLine(file.file_name, 60)} · ${formatSize(Number(file.file_size))}`
+    ),
+  ];
   const keyboard = new InlineKeyboard();
   if (page > 1) keyboard.text("‹ Previous", `trash:${page - 1}`);
   if (from + PAGE_SIZE < (count ?? 0)) keyboard.text("Next ›", `trash:${page + 1}`);
@@ -110,7 +130,7 @@ async function trashView(page: number) {
   return {
     text: `🗑️ In Trash · page ${page}\n\n${
       lines.join("\n")
-    }\n\nTrash is emptied automatically after ${config.trashRetentionDays} days. Restore files in the app.`,
+    }\n\nTrash is emptied automatically after ${config.trashRetentionDays} days. Restore files and folders in the app.`,
     keyboard,
   };
 }
@@ -461,7 +481,7 @@ bot.on("message", async (ctx) => {
     } else if (result.status === "duplicate") {
       await finish(
         result.inTrash
-          ? "♻️ This file is already in your Trash. Restore it from the app."
+          ? "♻️ This file is already in your Trash. Restore it, or the folder it was in, from the app."
           : "📌 This file is already in your Cloud Drive.",
       );
     } else {

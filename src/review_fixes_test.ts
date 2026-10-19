@@ -244,19 +244,227 @@ Deno.test("folder delete: reports how many files went to Trash and logs it", asy
     let called: unknown;
     client.rpc = (name: string, args: unknown) => {
       called = { name, args };
-      return Promise.resolve({ data: 3, error: null });
+      return Promise.resolve({ data: [{ o_entry: "trash-item-1", o_files: 3, o_folders: 2 }], error: null });
     };
     const app = new Hono();
     app.route("/", folderRoutes);
     const response = await app.request(`/folders/${A}`, { method: "DELETE" });
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { ok: true, trashed_files: 3 });
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      trash_id: "trash-item-1",
+      trashed_files: 3,
+      trashed_folders: 2,
+    });
     assert.deepEqual(called, { name: "delete_folder", args: { p_id: A } });
-    assert.deepEqual((logged[0] as { details: unknown }).details, { name: "k", trashed_files: 3 });
+    assert.deepEqual((logged[0] as { details: unknown }).details, {
+      name: "k",
+      trashed_files: 3,
+      trashed_folders: 2,
+    });
 
     client.rpc = () => Promise.resolve({ data: null, error: { code: "XX000", message: "boom" } });
     assert.equal((await app.request(`/folders/${A}`, { method: "DELETE" })).status, 500);
     assert.equal((await app.request(`/folders/not-a-uuid`, { method: "DELETE" })).status, 400);
+  } finally {
+    restore();
+  }
+});
+
+// ------------------------------------------------------------------ Trash routes
+
+const trashApp = () => {
+  const app = new Hono();
+  app.route("/", fileRoutes);
+  return app;
+};
+const ENTRY = "33333333-3333-4333-8333-333333333333";
+const jsonPost = (path: string, body?: unknown) =>
+  trashApp().request(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
+Deno.test("Trash list: deleted folders are listed as items; their files are not listed on their own", async () => {
+  const filters: string[] = [];
+  try {
+    client.from = (table: string) => {
+      if (table === "files") {
+        const chain = {
+          select: () => chain,
+          eq: (column: string, value: string) => (filters.push(`${column}=${value}`), chain),
+          is: (column: string, value: null) => (filters.push(`${column} is ${value}`), chain),
+          order: () => chain,
+          range: () =>
+            Promise.resolve({ data: [{ id: "f1", file_name: "alone.png" }], count: 1, error: null }),
+        };
+        return chain;
+      }
+      return {
+        select: (_columns: string, options?: { head?: boolean }) =>
+          options?.head ? Promise.resolve({ count: 2, error: null }) : {
+            order: () => ({
+              order: () => ({
+                limit: () =>
+                  Promise.resolve({
+                    data: [{ id: ENTRY, name: "k", path: "k", folder_count: 2, file_count: 1 }],
+                    error: null,
+                  }),
+              }),
+            }),
+          },
+      };
+    };
+    const first = await trashApp().request("/trash");
+    assert.equal(first.status, 200);
+    const body = await first.json() as {
+      items: unknown[];
+      folders: { name: string }[];
+      folder_total: number;
+    };
+    assert.deepEqual(filters, ["status=trashed", "trash_entry_id is null"]);
+    assert.equal(body.items.length, 1);
+    assert.deepEqual(body.folders.map((folder) => folder.name), ["k"]);
+    assert.equal(body.folder_total, 2);
+    const second = await (await trashApp().request("/trash?page=2")).json() as { folders: unknown[] };
+    assert.deepEqual(second.folders, []); // folder items are only sent with the first page
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("restore folder: reports what came back, handles rename, root fallback and errors", async () => {
+  try {
+    client.from = () => ({ insert: () => Promise.resolve({ error: null }) });
+    const row = { o_folder: A, o_name: "k", o_files: 1, o_folders: 2, o_renamed: false, o_to_root: false };
+    client.rpc = (name: string, args: unknown) => {
+      assert.equal(name, "restore_folder");
+      assert.deepEqual(args, { p_entry: ENTRY });
+      return Promise.resolve({ data: [row], error: null });
+    };
+    const ok = await jsonPost(`/trash/folders/${ENTRY}/restore`);
+    assert.equal(ok.status, 200);
+    assert.deepEqual(await ok.json(), {
+      ok: true,
+      folder_id: A,
+      name: "k",
+      restored_files: 1,
+      restored_folders: 2,
+      renamed: false,
+      moved_to_root: false,
+    });
+
+    client.rpc = () =>
+      Promise.resolve({
+        data: [{ ...row, o_name: "k (restored)", o_renamed: true, o_to_root: true }],
+        error: null,
+      });
+    const moved = await (await jsonPost(`/trash/folders/${ENTRY}/restore`)).json() as Record<string, unknown>;
+    assert.equal(moved.renamed, true);
+    assert.equal(moved.moved_to_root, true);
+    assert.equal(moved.name, "k (restored)");
+
+    client.rpc = () =>
+      Promise.resolve({ data: null, error: { code: "P0002", message: "trash_entry_not_found" } });
+    assert.equal((await jsonPost(`/trash/folders/${ENTRY}/restore`)).status, 404);
+    client.rpc = () => Promise.resolve({ data: null, error: { code: "23505", message: "duplicate" } });
+    assert.equal((await jsonPost(`/trash/folders/${ENTRY}/restore`)).status, 409);
+    client.rpc = () => Promise.resolve({ data: null, error: { code: "XX000", message: "boom" } });
+    assert.equal((await jsonPost(`/trash/folders/${ENTRY}/restore`)).status, 500);
+    assert.equal((await jsonPost(`/trash/folders/not-a-uuid/restore`)).status, 400);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("restore file: goes back through the database (original folder), flags the top-level fallback", async () => {
+  try {
+    client.from = () => ({ insert: () => Promise.resolve({ error: null }) });
+    client.rpc = (name: string, args: unknown) => {
+      assert.equal(name, "restore_files");
+      assert.deepEqual(args, { p_ids: [FILE] });
+      return Promise.resolve({ data: [{ o_id: FILE, o_name: "1.png", o_to_root: false }], error: null });
+    };
+    const ok = await jsonPost(`/trash/${FILE}/restore`);
+    assert.deepEqual(await ok.json(), { ok: true, moved_to_root: false });
+
+    client.rpc = () =>
+      Promise.resolve({ data: [{ o_id: FILE, o_name: "1.png", o_to_root: true }], error: null });
+    assert.deepEqual(await (await jsonPost(`/trash/${FILE}/restore`)).json(), {
+      ok: true,
+      moved_to_root: true,
+    });
+
+    client.rpc = () => Promise.resolve({ data: [], error: null }); // not trashed, or inside a deleted folder
+    assert.equal((await jsonPost(`/trash/${FILE}/restore`)).status, 404);
+
+    client.rpc = () =>
+      Promise.resolve({ data: [{ o_id: FILE, o_name: "1.png", o_to_root: true }], error: null });
+    const batch = await (await jsonPost("/files/batch/restore", { file_ids: [FILE] })).json() as Record<
+      string,
+      unknown
+    >;
+    assert.deepEqual(batch, { ok: true, count: 1, moved_to_root: 1 });
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("permanent delete of a Trash folder removes only orphaned Telegram messages", async () => {
+  const { bot } = await import("./telegram.ts");
+  const realDelete = bot.api.deleteMessage;
+  const deleted: number[] = [];
+  try {
+    client.from = (table: string) =>
+      table === "trashed_folders"
+        ? { select: () => ({ eq: () => ({ maybeSingle: () => Promise.resolve({ data: { name: "k" } }) }) }) }
+        : { insert: () => Promise.resolve({ error: null }) };
+    client.rpc = (name: string, args: unknown) => {
+      assert.equal(name, "purge_trashed_folder");
+      assert.deepEqual(args, { p_entry: ENTRY });
+      return Promise.resolve({
+        data: [
+          { tg_chat_id: -100, tg_message_id: 11, orphaned: true },
+          { tg_chat_id: -100, tg_message_id: 12, orphaned: false }, // a copy elsewhere still uses this one
+        ],
+        error: null,
+      });
+    };
+    // deno-lint-ignore no-explicit-any
+    (bot.api as any).deleteMessage = (_chat: number, message: number) => {
+      deleted.push(message);
+      return Promise.resolve(true);
+    };
+    const response = await trashApp().request(`/trash/folders/${ENTRY}`, { method: "DELETE" });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, deleted_files: 2 });
+    assert.deepEqual(deleted, [11]); // 12 is still used by a copy elsewhere, so it stays in the channel
+
+    client.from = () => ({
+      select: () => ({ eq: () => ({ maybeSingle: () => Promise.resolve({ data: null }) }) }),
+    });
+    assert.equal((await trashApp().request(`/trash/folders/${ENTRY}`, { method: "DELETE" })).status, 404);
+    assert.equal((await trashApp().request(`/trash/folders/x`, { method: "DELETE" })).status, 400);
+  } finally {
+    bot.api.deleteMessage = realDelete;
+    restore();
+  }
+});
+
+Deno.test("a file inside a deleted folder cannot be deleted on its own", async () => {
+  try {
+    client.from = () => ({
+      select: () => ({
+        eq: () => ({
+          maybeSingle: () =>
+            Promise.resolve({ data: { file_name: "1.png", status: "trashed", trash_entry_id: ENTRY } }),
+        }),
+      }),
+    });
+    const response = await trashApp().request(`/files/${FILE}/permanent`, { method: "DELETE" });
+    assert.equal(response.status, 409);
+    assert.match((await response.json() as { error: string }).error, /deleted folder/);
   } finally {
     restore();
   }
