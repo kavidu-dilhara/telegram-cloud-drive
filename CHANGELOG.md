@@ -29,6 +29,11 @@
   "name (restored)". Restoring a single file puts it back in its original folder (top level only if that
   folder no longer exists). Emptying Trash and the automatic cleanup include deleted folders. Re-run
   `supabase/schema.sql` to update the database.
+- A database failure while reading the owner account (sign-in, login screen, settings) now answers 503 with a
+  retry hint instead of "invalid credentials" or "password sign-in is off", and is not counted as a failed
+  sign-in attempt.
+- The Trash list pages through every deleted folder and file (it was cut off at 200 folders). Telegram
+  `/trash` says how many more folders there are when it cannot list them all.
 - A folder can no longer be copied into itself or one of its subfolders, and copying a folder is safe even if
   the folder hierarchy is ever damaged. Re-run `supabase/schema.sql` to update the database function.
 - Only one share link per file is enforced by the database. Re-running `supabase/schema.sql` removes older
