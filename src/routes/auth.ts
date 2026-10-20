@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
 import { allowedOrigins, config } from "../config.ts";
 import { db, logAction } from "../db.ts";
-import { type AppEnv, type Ctx, fail, jsonBody } from "../http.ts";
+import { type AppEnv, type Ctx, fail, jsonBody, ServiceUnavailableError } from "../http.ts";
 import { maybeRunMaintenance } from "../maintenance.ts";
 import {
   clearFailures,
@@ -63,7 +63,7 @@ const clearSessionCookie = (c: Ctx | import("hono").Context) =>
 // take effect on every backend instance immediately.
 
 /** Thrown when the session version cannot be read, so callers refuse instead of guessing. */
-export class SessionStoreUnavailableError extends Error {
+export class SessionStoreUnavailableError extends ServiceUnavailableError {
   constructor(message = "Session version is unavailable") {
     super(message);
     this.name = "SessionStoreUnavailableError";
@@ -105,10 +105,15 @@ interface OwnerRow {
   password_enabled: boolean;
 }
 
+/** The owner's account row (null when the owner has not signed in yet). A database failure throws a 503-class error. */
 const ownerRow = async () => {
-  const { data } = await db.from("users").select(
+  const { data, error } = await db.from("users").select(
     "telegram_id,login_username,password_hash,password_salt,password_iterations,password_enabled",
   ).eq("telegram_id", config.ownerId).maybeSingle();
+  if (error) {
+    console.error("Unable to read the owner account", error.message);
+    throw new ServiceUnavailableError("Owner account is unavailable");
+  }
   return data as OwnerRow | null;
 };
 

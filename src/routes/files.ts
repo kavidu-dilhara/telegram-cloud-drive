@@ -191,32 +191,45 @@ const TRASH_FOLDER_COLUMNS = "id,folder_id,parent_id,name,path,folder_count,file
 fileRoutes.get("/trash", async (c) => {
   const page = Math.max(1, Math.min(100000, Number(c.req.query("page") ?? "1") || 1));
   const limit = Math.max(1, Math.min(100, Number(c.req.query("limit") ?? "50") || 50));
-  // Files inside a deleted folder are part of that folder's Trash item, so they are not listed on their own.
-  const { data, error, count } = await db.from("files").select(PUBLIC_FILE_COLUMNS, { count: "exact" })
-    .eq("status", "trashed").is("trash_entry_id", null).order("deleted_at", { ascending: false }).order("id")
-    .range((page - 1) * limit, page * limit - 1);
-  if (error) return fail(c, "Unable to load trash", 500);
-  const { count: folderTotal, error: countError } = await db.from("trashed_folders").select("id", {
-    count: "exact",
-    head: true,
-  });
-  if (countError) return fail(c, "Unable to load trash", 500);
+  const offset = (page - 1) * limit;
+
+  // One list, paged as a whole: deleted folders first, then files. Files inside a deleted folder belong to that
+  // folder's Trash item, so they are not listed on their own.
+  const folderCountResult = await db.from("trashed_folders").select("id", { count: "exact", head: true });
+  if (folderCountResult.error) return fail(c, "Unable to load trash", 500);
+  const folderTotal = folderCountResult.count ?? 0;
+  const foldersOnPage = Math.max(0, Math.min(limit, folderTotal - offset));
+  const filesOnPage = limit - foldersOnPage;
+  const fileOffset = Math.max(0, offset - folderTotal);
+
   let folders: unknown[] = [];
-  if (page === 1) {
+  if (foldersOnPage > 0) {
     const result = await db.from("trashed_folders").select(TRASH_FOLDER_COLUMNS).order("deleted_at", {
       ascending: false,
-    }).order("id").limit(200);
+    }).order("id").range(offset, offset + foldersOnPage - 1);
     if (result.error) return fail(c, "Unable to load trash", 500);
     folders = result.data ?? [];
   }
+
+  const filesQuery = db.from("files").select(PUBLIC_FILE_COLUMNS, { count: "exact", head: filesOnPage === 0 })
+    .eq("status", "trashed").is("trash_entry_id", null);
+  const fileResult = filesOnPage > 0
+    ? await filesQuery.order("deleted_at", { ascending: false }).order("id").range(
+      fileOffset,
+      fileOffset + filesOnPage - 1,
+    )
+    : await filesQuery;
+  if (fileResult.error) return fail(c, "Unable to load trash", 500);
+  const fileTotal = fileResult.count ?? 0;
+
   return c.json({
-    items: data ?? [],
+    items: filesOnPage > 0 ? fileResult.data ?? [] : [],
     folders,
-    folder_total: folderTotal ?? 0,
+    folder_total: folderTotal,
     page,
     limit,
-    total: count ?? 0,
-    has_more: page * limit < (count ?? 0),
+    total: fileTotal,
+    has_more: offset + limit < folderTotal + fileTotal,
     retention_days: config.trashRetentionDays,
   });
 });
