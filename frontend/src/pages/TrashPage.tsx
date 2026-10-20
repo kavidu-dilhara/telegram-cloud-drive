@@ -42,7 +42,12 @@ export default function TrashPage() {
         ? [...old, ...result.items.filter((item) => !old.some((existing) => existing.id === item.id))]
         : result.items)
       );
-      if (!append) setFolders(result.folders ?? []);
+      setFolders((current) => {
+        const next = result.folders ?? [];
+        if (!append) return next;
+        const known = new Set(current.map((folder) => folder.id));
+        return [...current, ...next.filter((folder) => !known.has(folder.id))];
+      });
       setFolderTotal(result.folder_total ?? 0);
       setPage(result.page);
       setHasMore(result.has_more);
