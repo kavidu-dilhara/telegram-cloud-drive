@@ -94,13 +94,12 @@ async function trashView(page: number) {
   // Deleted folders are single items in Trash (their files are inside them); shown on the first page.
   let folderLines: string[] = [];
   if (page === 1) {
-    const folders = await db.from("trashed_folders").select("name,file_count,folder_count").order(
-      "deleted_at",
-      {
-        ascending: false,
-      },
-    ).order("id").limit(PAGE_SIZE);
+    const folders = await db.from("trashed_folders").select("name,file_count,folder_count", {
+      count: "exact",
+    })
+      .order("deleted_at", { ascending: false }).order("id").limit(PAGE_SIZE);
     if (folders.error) throw folders.error;
+    const hiddenFolders = (folders.count ?? 0) - (folders.data?.length ?? 0);
     folderLines = (folders.data ?? []).map((folder) => {
       const files = `${folder.file_count} file${folder.file_count === 1 ? "" : "s"}`;
       const subfolders = Number(folder.folder_count) - 1;
@@ -108,6 +107,11 @@ async function trashView(page: number) {
         subfolders > 0 ? `, ${subfolders} subfolder${subfolders === 1 ? "" : "s"}` : ""
       }`;
     });
+    if (hiddenFolders > 0) {
+      folderLines.push(
+        `…and ${hiddenFolders} more folder${hiddenFolders === 1 ? "" : "s"} (open the app to see them)`,
+      );
+    }
   }
   if (!data?.length && !folderLines.length && page === 1) {
     return {

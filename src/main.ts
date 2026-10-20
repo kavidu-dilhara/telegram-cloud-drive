@@ -3,7 +3,7 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { webhookCallback } from "grammy";
 import { allowedOrigins, config } from "./config.ts";
-import { apiBodyLimit, type AppEnv, fail } from "./http.ts";
+import { apiBodyLimit, type AppEnv, fail, handleError } from "./http.ts";
 import { safeEqualText } from "./lib.ts";
 import { scheduleMaintenance } from "./maintenance.ts";
 import { originGuard, privateAuth, publicAuth, requireAuth } from "./routes/auth.ts";
@@ -48,10 +48,7 @@ app.route("/api", shareRoutes);
 app.route("/api", systemRoutes);
 
 app.notFound((c) => fail(c, "Not found", 404));
-app.onError((error, c) => {
-  console.error("Unhandled error", c.req.method, c.req.path, error);
-  return fail(c, "Something went wrong on the server", 500);
-});
+app.onError(handleError);
 
 scheduleMaintenance();
 Deno.serve({ port: config.port }, app.fetch);

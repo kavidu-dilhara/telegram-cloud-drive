@@ -5,6 +5,25 @@ import type { SessionClaims } from "./security.ts";
 export type AppEnv = { Variables: { session: SessionClaims } };
 export type Ctx = Context<AppEnv>;
 
+/** Thrown when the database cannot answer, so the request fails as a service problem (503), not as bad input. */
+export class ServiceUnavailableError extends Error {
+  constructor(message = "A required service is unavailable") {
+    super(message);
+    this.name = "ServiceUnavailableError";
+  }
+}
+
+/** Global error handler: unavailable dependencies answer 503 (retry shortly); anything else is a plain 500. */
+export function handleError(error: Error, c: Context) {
+  if (error instanceof ServiceUnavailableError) {
+    console.error("Service unavailable", c.req.method, c.req.path, error.message);
+    c.header("Retry-After", "5");
+    return fail(c, "The service is temporarily unavailable. Try again in a moment.", 503);
+  }
+  console.error("Unhandled error", c.req.method, c.req.path, error);
+  return fail(c, "Something went wrong on the server", 500);
+}
+
 /** Largest accepted request body: sign-in routes carry a few hundred bytes, everything else a few KB. */
 export const AUTH_BODY_LIMIT = 16 * 1024;
 export const API_BODY_LIMIT = 64 * 1024;

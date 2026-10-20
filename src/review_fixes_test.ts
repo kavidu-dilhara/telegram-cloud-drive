@@ -10,6 +10,8 @@ const { folderRoutes } = await import("./routes/folders.ts");
 const { shareRoutes } = await import("./routes/shares.ts");
 const { fileRoutes } = await import("./routes/files.ts");
 const { encryptToken } = await import("./security.ts");
+const { handleError, ServiceUnavailableError } = await import("./http.ts");
+const { publicAuth, privateAuth } = await import("./routes/auth.ts");
 
 // deno-lint-ignore no-explicit-any
 const client = db as any;
@@ -286,49 +288,110 @@ const jsonPost = (path: string, body?: unknown) =>
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
-Deno.test("Trash list: deleted folders are listed as items; their files are not listed on their own", async () => {
-  const filters: string[] = [];
-  try {
-    client.from = (table: string) => {
-      if (table === "files") {
-        const chain = {
-          select: () => chain,
-          eq: (column: string, value: string) => (filters.push(`${column}=${value}`), chain),
-          is: (column: string, value: null) => (filters.push(`${column} is ${value}`), chain),
-          order: () => chain,
-          range: () =>
-            Promise.resolve({ data: [{ id: "f1", file_name: "alone.png" }], count: 1, error: null }),
-        };
-        return chain;
-      }
-      return {
-        select: (_columns: string, options?: { head?: boolean }) =>
-          options?.head ? Promise.resolve({ count: 2, error: null }) : {
+/** A Trash database with `folderTotal` deleted folders and `fileTotal` loose trashed files; records every query. */
+const trashDb = (folderTotal: number, fileTotal: number, calls: string[]) => (table: string) => {
+  const rows = (prefix: string, from: number, to: number) =>
+    Array.from({ length: Math.max(0, to - from + 1) }, (_, index) => ({ id: `${prefix}${from + index}` }));
+  if (table === "trashed_folders") {
+    return {
+      select: (_columns: string, options?: { head?: boolean }) =>
+        options?.head ? Promise.resolve({ count: folderTotal, error: null }) : {
+          order: () => ({
             order: () => ({
-              order: () => ({
-                limit: () =>
-                  Promise.resolve({
-                    data: [{ id: ENTRY, name: "k", path: "k", folder_count: 2, file_count: 1 }],
-                    error: null,
-                  }),
-              }),
+              range: (from: number, to: number) => {
+                calls.push(`folders ${from}-${to}`);
+                return Promise.resolve({
+                  data: rows("folder-", from, Math.min(to, folderTotal - 1)),
+                  error: null,
+                });
+              },
             }),
-          },
+          }),
+        },
+    };
+  }
+  return {
+    select: () => {
+      const filters: string[] = [];
+      // deno-lint-ignore no-explicit-any
+      const builder: any = {
+        eq: (column: string, value: string) => (filters.push(`${column}=${value}`), builder),
+        is: (column: string) => (filters.push(`${column} is null`), builder),
+        order: () => builder,
+        range: (from: number, to: number) => {
+          calls.push(`files ${from}-${to} [${filters.join(",")}]`);
+          // like a real database: only rows that exist come back
+          return Promise.resolve({
+            data: rows("file-", from, Math.min(to, fileTotal - 1)),
+            count: fileTotal,
+            error: null,
+          });
+        },
+        then: (resolve: (value: unknown) => unknown) => {
+          calls.push("files count");
+          return Promise.resolve({ data: null, count: fileTotal, error: null }).then(resolve);
+        },
       };
-    };
-    const first = await trashApp().request("/trash");
-    assert.equal(first.status, 200);
-    const body = await first.json() as {
-      items: unknown[];
-      folders: { name: string }[];
-      folder_total: number;
-    };
-    assert.deepEqual(filters, ["status=trashed", "trash_entry_id is null"]);
-    assert.equal(body.items.length, 1);
-    assert.deepEqual(body.folders.map((folder) => folder.name), ["k"]);
-    assert.equal(body.folder_total, 2);
-    const second = await (await trashApp().request("/trash?page=2")).json() as { folders: unknown[] };
-    assert.deepEqual(second.folders, []); // folder items are only sent with the first page
+      return builder;
+    },
+  };
+};
+
+type TrashBody = {
+  items: { id: string }[];
+  folders: { id: string }[];
+  folder_total: number;
+  has_more: boolean;
+};
+
+Deno.test("Trash list: folders and files are paged as one list, nothing is cut off", async () => {
+  try {
+    const calls: string[] = [];
+    client.from = trashDb(3, 5, calls);
+    const get = async (page: number, limit: number) =>
+      await (await trashApp().request(`/trash?page=${page}&limit=${limit}`)).json() as TrashBody;
+
+    const first = await get(1, 2);
+    assert.deepEqual(first.folders.map((row) => row.id), ["folder-0", "folder-1"]);
+    assert.equal(first.items.length, 0);
+    assert.equal(first.has_more, true);
+    const second = await get(2, 2); // the last folder, then the first file
+    assert.deepEqual(second.folders.map((row) => row.id), ["folder-2"]);
+    assert.deepEqual(second.items.map((row) => row.id), ["file-0"]);
+    const third = await get(3, 2);
+    assert.deepEqual(third.items.map((row) => row.id), ["file-1", "file-2"]);
+    const fourth = await get(4, 2);
+    assert.deepEqual(fourth.items.map((row) => row.id), ["file-3", "file-4"]);
+    assert.equal(fourth.has_more, false);
+    assert.equal(fourth.folder_total, 3);
+    // files inside deleted folders are never listed on their own
+    assert.ok(
+      calls.filter((call) => call.startsWith("files ") && call !== "files count").every((call) =>
+        call.endsWith("[status=trashed,trash_entry_id is null]")
+      ),
+    );
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("Trash list: 450 deleted folders are all reachable (the old 200-folder cap is gone)", async () => {
+  try {
+    client.from = trashDb(450, 30, []);
+    const folders: string[] = [];
+    const files: string[] = [];
+    let hasMore = true;
+    for (let page = 1; hasMore; page++) {
+      const body = await (await trashApp().request(`/trash?page=${page}&limit=100`)).json() as TrashBody;
+      folders.push(...body.folders.map((row) => row.id));
+      files.push(...body.items.map((row) => row.id));
+      hasMore = body.has_more;
+      assert.ok(page < 20, "paging must end");
+    }
+    assert.equal(folders.length, 450);
+    assert.equal(new Set(folders).size, 450); // no duplicates
+    assert.equal(files.length, 30);
+    assert.equal(new Set(files).size, 30);
   } finally {
     restore();
   }
@@ -465,6 +528,97 @@ Deno.test("a file inside a deleted folder cannot be deleted on its own", async (
     const response = await trashApp().request(`/files/${FILE}/permanent`, { method: "DELETE" });
     assert.equal(response.status, 409);
     assert.match((await response.json() as { error: string }).error, /deleted folder/);
+  } finally {
+    restore();
+  }
+});
+
+// ------------------------------------------------------------ owner lookup failures
+
+Deno.test("handleError: unavailable dependencies are 503 with Retry-After, everything else 500", async () => {
+  const app = new Hono();
+  app.onError(handleError);
+  app.get("/down", () => {
+    throw new ServiceUnavailableError("db down");
+  });
+  app.get("/bug", () => {
+    throw new Error("bug");
+  });
+  const down = await app.request("/down");
+  assert.equal(down.status, 503);
+  assert.equal(down.headers.get("Retry-After"), "5");
+  assert.equal((await app.request("/bug")).status, 500);
+});
+
+Deno.test("owner lookup: a database failure is a 503, never 'wrong password' or 'password sign-in disabled'", async () => {
+  const rpcCalls: string[] = [];
+  try {
+    const usersFail = {
+      select: () => ({
+        eq: () => ({ maybeSingle: () => Promise.resolve({ data: null, error: { message: "boom" } }) }),
+      }),
+    };
+    client.from = (table: string) =>
+      table === "users"
+        ? usersFail
+        : { select: () => ({ in: () => ({ gt: () => Promise.resolve({ data: [], error: null }) }) }) };
+    client.rpc = (name: string) => (rpcCalls.push(name), Promise.resolve({ data: 1, error: null }));
+
+    const app = new Hono();
+    app.onError(handleError);
+    app.route("/api/auth", publicAuth);
+    const method = await app.request("/api/auth/method");
+    assert.equal(method.status, 503); // used to claim password sign-in is off
+    const login = await app.request("/api/auth/password/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "owner", password: "correct horse battery" }),
+    });
+    assert.equal(login.status, 503);
+    assert.equal(rpcCalls.length, 0); // an outage is not counted as a failed password attempt
+
+    // signed-in routes: no misleading "not enabled" answers or credential writes during an outage
+    const session = new Hono();
+    session.onError(handleError);
+    session.use("*", async (c, next) => {
+      // deno-lint-ignore no-explicit-any
+      (c as any).set("session", {
+        sub: 42,
+        via: "telegram",
+        iat: Date.now() - 3_600_000,
+        exp: Date.now() + 3_600_000,
+        v: 1,
+      });
+      await next();
+    });
+    session.route("/", privateAuth);
+    const json = (method: string, path: string, body: unknown) =>
+      session.request(path, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    assert.equal((await session.request("/me")).status, 503);
+    const credentials = { username: "owner", password: "correct-horse-battery-1" };
+    assert.equal((await json("POST", "/password/setup", credentials)).status, 503);
+    assert.equal((await json("PATCH", "/password", { ...credentials, current_password: "x" })).status, 503);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("owner lookup: healthy database behaves as before", async () => {
+  try {
+    const answer = (data: unknown) => ({
+      select: () => ({ eq: () => ({ maybeSingle: () => Promise.resolve({ data, error: null }) }) }),
+    });
+    const app = new Hono();
+    app.onError(handleError);
+    app.route("/api/auth", publicAuth);
+    client.from = () => answer({ password_enabled: true, login_username: "owner" });
+    assert.deepEqual(await (await app.request("/api/auth/method")).json(), { password_enabled: true });
+    client.from = () => answer(null); // the owner has not signed in yet
+    assert.deepEqual(await (await app.request("/api/auth/method")).json(), { password_enabled: false });
   } finally {
     restore();
   }
