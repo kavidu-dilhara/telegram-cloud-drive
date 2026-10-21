@@ -6,16 +6,12 @@ import { resolveClientIp } from "./lib.ts";
 
 export const LOGIN_WINDOW_SECONDS = 15 * 60;
 
-/** How long throttling stays refused after a counter write failed (the check fails closed, not open). */
-const DEGRADED_MS = 60_000;
-let degradedUntil = 0;
-
 export interface LimitRule {
   key: string;
   max: number;
 }
 
-/** Thrown when the failure counters cannot be trusted, so callers must refuse the attempt. */
+/** Thrown when the attempt counters cannot be used, so callers must refuse the attempt (fail closed). */
 export class ThrottleUnavailableError extends Error {
   constructor(message = "Login throttling is unavailable") {
     super(message);
@@ -23,58 +19,47 @@ export class ThrottleUnavailableError extends Error {
   }
 }
 
-/** Test helper: forget that a counter write failed. */
-export const resetThrottleState = () => {
-  degradedUntil = 0;
-};
-
 /**
- * True when any rule has reached its failure limit inside its current window.
- * Throws ThrottleUnavailableError when the counters cannot be read or a recent write failed.
+ * Counts one attempt against every rule in a single atomic database step and says whether it may go ahead.
+ * Because the attempt is counted BEFORE the slow password check, parallel requests cannot all pass together.
+ * Returns false (nothing counted) when any rule is already at its limit. Throws ThrottleUnavailableError
+ * when the counters cannot be reached.
  */
-export async function isLimited(rules: LimitRule[]): Promise<boolean> {
-  if (Date.now() < degradedUntil) throw new ThrottleUnavailableError();
+export async function reserveAttempt(rules: LimitRule[]): Promise<boolean> {
   let result;
   try {
-    result = await db.from("login_attempts").select("key,failures").in(
-      "key",
-      rules.map((rule) => rule.key),
-    ).gt("window_ends_at", new Date().toISOString());
+    result = await db.rpc("reserve_login_attempt", {
+      p_keys: rules.map((rule) => rule.key),
+      p_maxes: rules.map((rule) => rule.max),
+      p_window_seconds: LOGIN_WINDOW_SECONDS,
+    });
   } catch (error) {
     result = { data: null, error: error as { message?: string } };
   }
-  if (result.error || !Array.isArray(result.data)) {
-    console.error("Login rate-limit lookup failed", result.error?.message ?? "no data returned");
+  if (result.error || typeof result.data !== "boolean") {
+    console.error("Login rate-limit check failed", result.error?.message ?? "unexpected answer");
     throw new ThrottleUnavailableError();
   }
-  return result.data.some((row) => rules.some((rule) => rule.key === row.key && row.failures >= rule.max));
+  return result.data;
 }
 
-/**
- * Counts one failure for every key (stored in the database, so it works across isolates).
- * A failed write is logged and makes the next checks refuse for a minute instead of silently
- * leaving the account unthrottled.
- */
-export async function recordFailure(keys: string[]) {
-  const results = await Promise.allSettled(
-    keys.map((key) =>
-      db.rpc("register_login_failure", { p_key: key, p_window_seconds: LOGIN_WINDOW_SECONDS })
-    ),
-  );
-  const failed = results.find((result) => result.status === "rejected" || result.value.error);
-  if (failed) {
-    const reason = failed.status === "rejected" ? failed.reason : failed.value.error?.message;
-    console.error("Unable to record a failed sign-in", reason);
-    degradedUntil = Date.now() + DEGRADED_MS;
-  }
-}
-
+/** After a successful sign-in: forget the failures of these keys. */
 export async function clearFailures(keys: string[]) {
   try {
     const { error } = await db.from("login_attempts").delete().in("key", keys);
     if (error) console.error("Unable to clear sign-in counters", error.message);
   } catch (error) {
     console.error("Unable to clear sign-in counters", error);
+  }
+}
+
+/** After a successful sign-in: give back the attempt that was reserved on a shared counter. */
+export async function refundAttempt(keys: string[]) {
+  try {
+    const { error } = await db.rpc("refund_login_attempt", { p_keys: keys });
+    if (error) console.error("Unable to refund a sign-in attempt", error.message);
+  } catch (error) {
+    console.error("Unable to refund a sign-in attempt", error);
   }
 }
 

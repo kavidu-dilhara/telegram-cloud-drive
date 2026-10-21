@@ -150,10 +150,38 @@ export async function verifyPassword(
 }
 
 /** Burns the same CPU time as a real check so unknown usernames are not detectable by timing. */
+/** Work factor of hashes made before the iteration count was stored with each password. */
+export const LEGACY_PBKDF2_ITERATIONS = 210_000;
+
+/**
+ * Checks a password against a stored hash. A missing iteration count means the original 210,000. Rows that an
+ * older schema upgrade labelled with the current default although they were hashed at 210,000 are recognised too.
+ * needsUpgrade tells the caller to re-hash with the current work factor after a successful sign-in.
+ */
+export async function verifyPasswordCompat(
+  password: string,
+  salt: string,
+  hash: string,
+  storedIterations: number | null,
+): Promise<{ valid: boolean; needsUpgrade: boolean }> {
+  const iterations = storedIterations ?? LEGACY_PBKDF2_ITERATIONS;
+  if (await verifyPassword(password, salt, hash, iterations)) {
+    return { valid: true, needsUpgrade: iterations < PBKDF2_ITERATIONS };
+  }
+  if (
+    iterations === PBKDF2_ITERATIONS && await verifyPassword(password, salt, hash, LEGACY_PBKDF2_ITERATIONS)
+  ) {
+    return { valid: true, needsUpgrade: true };
+  }
+  return { valid: false, needsUpgrade: false };
+}
+
+/** Spends the same time as a failed check of a real account, so unknown usernames cannot be told apart by timing. */
 export async function burnPasswordCheck(password: string) {
-  await hashPassword(password.slice(0, PASSWORD_MAX), "AAAAAAAAAAAAAAAAAAAAAA", PBKDF2_ITERATIONS).catch(() =>
-    undefined
-  );
+  const text = password.slice(0, PASSWORD_MAX);
+  for (const iterations of [PBKDF2_ITERATIONS, LEGACY_PBKDF2_ITERATIONS]) {
+    await hashPassword(text, "AAAAAAAAAAAAAAAAAAAAAA", iterations).catch(() => undefined);
+  }
 }
 
 // ------------------------------------------------- share-token encryption

@@ -1,3 +1,4 @@
+import { AlbumReports } from "./album.ts";
 import { type Context, InlineKeyboard } from "grammy";
 import { config } from "./config.ts";
 import { allFolders, db, filesByIds, type FolderRow, logAction } from "./db.ts";
@@ -140,26 +141,17 @@ async function trashView(page: number) {
 }
 
 async function favoritesView(requestedPage = 1) {
-  const { count, error: countError } = await db.from("favorites").select("id", {
-    count: "exact",
-    head: true,
-  });
-  if (countError) throw countError;
-  const pages = Math.max(1, Math.ceil((count ?? 0) / PAGE_SIZE));
-  const page = Math.min(Math.max(1, requestedPage), pages);
-  const from = (page - 1) * PAGE_SIZE;
-  const { data: rows, error } = await db.from("favorites").select("file_id").order("created_at", {
-    ascending: false,
-  }).order("id").range(from, from + PAGE_SIZE - 1);
+  // The database pages and counts only favorites whose file is active, so pages are never short or numbered wrongly.
+  const { data, error } = await db.rpc("favorites_page", { p_page: requestedPage, p_size: PAGE_SIZE });
   if (error) throw error;
-  const ids = (rows ?? []).map((row) => row.file_id as string);
-  const found = await filesByIds<{ id: string; file_name: string; file_size: number }>(
-    ids,
-    "id,file_name,file_size",
-    true,
-  );
-  const byId = new Map(found.map((file) => [file.id, file]));
-  const files = ids.flatMap((id) => byId.get(id) ?? []);
+  const rows = (data ?? []) as Array<
+    { o_total: number; o_page: number; o_id: string; o_name: string; o_size: number }
+  >;
+  const total = Number(rows[0]?.o_total ?? 0);
+  const page = Number(rows[0]?.o_page ?? 1);
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const from = (page - 1) * PAGE_SIZE;
+  const files = rows.map((row) => ({ id: row.o_id, file_name: row.o_name, file_size: row.o_size }));
 
   // Every favorite listed on this page gets a button, so each one can be removed from here.
   const keyboard = new InlineKeyboard();
@@ -445,7 +437,7 @@ bot.command(
 
 // ------------------------------------------------------- incoming files
 
-const albumsSeen = new Map<string, number>();
+const albums = new AlbumReports();
 
 bot.on("message", async (ctx) => {
   const message = ctx.message;
@@ -458,17 +450,15 @@ bot.on("message", async (ctx) => {
     );
   }
 
-  // Albums arrive as several messages: answer once instead of once per file.
-  let silent = false;
-  if (message.media_group_id) {
-    const key = `${message.chat.id}:${message.media_group_id}`;
-    silent = albumsSeen.has(key);
-    albumsSeen.set(key, Date.now());
-    for (const [seen, at] of albumsSeen) if (Date.now() - at > 120_000) albumsSeen.delete(seen);
-  }
-  const status = silent ? null : await ctx.reply(
-    message.media_group_id ? "⏳ Album received. Saving all files…" : "⏳ Saving your file…",
-  );
+  // Albums arrive as several messages that share ONE status message showing how every file went.
+  const album = message.media_group_id
+    ? albums.join(
+      `${message.chat.id}:${message.media_group_id}`,
+      async () => (await ctx.reply("⏳ Album received. Saving all files…")).message_id,
+      (statusId, text) => ctx.api.editMessageText(ctx.chat.id, statusId, text, { reply_markup: appButton() }),
+    )
+    : null;
+  const status = album ? null : await ctx.reply("⏳ Saving your file…");
   const finish = (text: string, keyboard = appButton()) =>
     status
       ? ctx.api.editMessageText(ctx.chat.id, status.message_id, text, { reply_markup: keyboard })
@@ -477,26 +467,24 @@ bot.on("message", async (ctx) => {
   try {
     const result = await storeIncoming(message);
     if (result.status === "stored") {
-      await finish(
-        message.media_group_id
-          ? "✅ Album saved to your Cloud Drive."
-          : `✅ Saved: ${singleLine(result.filename, 80)}\n${formatSize(result.size)}`,
-      );
+      await (album
+        ? album.record("saved")
+        : finish(`✅ Saved: ${singleLine(result.filename, 80)}\n${formatSize(result.size)}`));
     } else if (result.status === "duplicate") {
-      await finish(
+      await (album ? album.record(result.inTrash ? "trashed" : "duplicate") : finish(
         result.inTrash
           ? "♻️ This file is already in your Trash. Restore it, or the folder it was in, from the app."
           : "📌 This file is already in your Cloud Drive.",
-      );
+      ));
     } else {
-      await finish("📎 That message has no file I can save.");
+      await (album ? album.record("empty") : finish("📎 That message has no file I can save."));
     }
   } catch (error) {
     console.error("Unable to store incoming file", error);
-    await finish(
+    await (album ? album.record("failed") : finish(
       "⚠️ I couldn't save this file. Nothing was lost - please send it again in a moment.",
       new InlineKeyboard(),
-    );
+    ));
   }
 });
 

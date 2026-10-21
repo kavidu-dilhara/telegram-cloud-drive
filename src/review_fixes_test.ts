@@ -562,7 +562,10 @@ Deno.test("owner lookup: a database failure is a 503, never 'wrong password' or 
       table === "users"
         ? usersFail
         : { select: () => ({ in: () => ({ gt: () => Promise.resolve({ data: [], error: null }) }) }) };
-    client.rpc = (name: string) => (rpcCalls.push(name), Promise.resolve({ data: 1, error: null }));
+    client.rpc = (
+      name: string,
+    ) => (rpcCalls.push(name),
+      Promise.resolve({ data: name === "reserve_login_attempt" ? true : null, error: null }));
 
     const app = new Hono();
     app.onError(handleError);
@@ -575,7 +578,8 @@ Deno.test("owner lookup: a database failure is a 503, never 'wrong password' or 
       body: JSON.stringify({ username: "owner", password: "correct horse battery" }),
     });
     assert.equal(login.status, 503);
-    assert.equal(rpcCalls.length, 0); // an outage is not counted as a failed password attempt
+    // the attempt was reserved, then given back: an outage is not the visitor's failed attempt
+    assert.deepEqual(rpcCalls, ["reserve_login_attempt", "refund_login_attempt"]);
 
     // signed-in routes: no misleading "not enabled" answers or credential writes during an outage
     const session = new Hono();
