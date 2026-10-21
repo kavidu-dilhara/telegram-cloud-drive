@@ -22,7 +22,7 @@ create table if not exists users (
   login_username text,
   password_hash text,
   password_salt text,
-  password_iterations integer not null default 600000,
+  password_iterations integer,                         -- NULL = hashed with the original 210,000 iterations
   password_enabled boolean not null default false,
   session_version integer not null default 1,        -- bump to sign out every device
   created_at timestamptz not null default now()
@@ -138,7 +138,12 @@ create table if not exists login_attempts (
 );
 
 -- If a previous attempt left older copies of these tables behind, make sure the newer columns exist.
-alter table users add column if not exists password_iterations integer not null default 600000;
+-- No default on purpose: rows hashed before this column existed must stay NULL (= 210,000 iterations). Every new
+-- hash stores its own count, and a successful login upgrades older hashes.
+alter table users add column if not exists password_iterations integer;
+-- Databases that already ran an earlier version of this script got "not null default 600000": relax that too.
+alter table users alter column password_iterations drop not null;
+alter table users alter column password_iterations drop default;
 alter table users add column if not exists session_version integer not null default 1;
 alter table shares add column if not exists share_token_enc text;
 -- Where a trashed file came from. trashed_folder_id has no foreign key on purpose: that folder may be deleted.
@@ -179,6 +184,64 @@ language sql security definer set search_path = public as $$
     failures = case when la.window_ends_at < now() then 1 else la.failures + 1 end,
     window_ends_at = case when la.window_ends_at < now() then now() + make_interval(secs => p_window_seconds) else la.window_ends_at end
   returning failures;
+$$;
+
+-- Counts one sign-in attempt against every key in ONE atomic step, BEFORE the slow password check, so a burst of
+-- parallel requests cannot all slip past the limit. Returns false (and counts nothing) when any key is already at its
+-- limit. p_maxes[i] is the limit for p_keys[i].
+create or replace function reserve_login_attempt(p_keys text[], p_maxes integer[], p_window_seconds integer)
+returns boolean
+language plpgsql security definer set search_path = public as $$
+declare
+  v_over boolean;
+begin
+  if array_length(p_keys, 1) is null or array_length(p_keys, 1) <> coalesce(array_length(p_maxes, 1), 0) then
+    raise exception 'keys and limits must match' using errcode = '22023';
+  end if;
+  insert into login_attempts (key, failures, window_ends_at)
+    select k, 0, now() + make_interval(secs => p_window_seconds) from unnest(p_keys) as k
+    on conflict (key) do nothing;
+  -- Lock the rows in a fixed order: concurrent callers queue up one after another (and cannot deadlock).
+  perform 1 from login_attempts where key = any (p_keys) order by key for update;
+  update login_attempts set failures = 0, window_ends_at = now() + make_interval(secs => p_window_seconds)
+    where key = any (p_keys) and window_ends_at <= now();
+  select exists (
+    select 1 from unnest(p_keys, p_maxes) as t (k, m) join login_attempts la on la.key = t.k where la.failures >= t.m
+  ) into v_over;
+  if v_over then
+    return false;
+  end if;
+  update login_attempts set failures = failures + 1 where key = any (p_keys);
+  return true;
+end;
+$$;
+
+-- Gives back one reserved attempt (used for the shared counter after a successful sign-in).
+create or replace function refund_login_attempt(p_keys text[])
+returns void
+language sql security definer set search_path = public as $$
+  update login_attempts set failures = greatest(failures - 1, 0) where key = any (p_keys);
+$$;
+
+-- One page of favorites, counting and paging ONLY favorites whose file is active (favorites of trashed files stay
+-- saved but are neither listed nor counted). The page number is clamped into range and returned.
+create or replace function favorites_page(p_page integer, p_size integer)
+returns table (o_total bigint, o_page integer, o_id uuid, o_name text, o_size bigint)
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_size integer := least(greatest(coalesce(p_size, 8), 1), 100);
+  v_total bigint;
+  v_page integer;
+begin
+  select count(*) into v_total from favorites fav join files f on f.id = fav.file_id where f.status = 'active';
+  v_page := least(greatest(coalesce(p_page, 1), 1), greatest(1, ceil(v_total::numeric / v_size)::integer));
+  return query
+    select v_total, v_page, f.id, f.file_name, f.file_size
+    from favorites fav join files f on f.id = fav.file_id
+    where f.status = 'active'
+    order by fav.created_at desc, fav.id
+    offset (v_page - 1) * v_size limit v_size;
+end;
 $$;
 
 -- Moves a folder and everything inside it to Trash as ONE Trash item. The tree is saved in trashed_folders (ids, names,
@@ -463,6 +526,9 @@ $$;
 -- Only the backend (service role) may call these functions; the public API keys may not.
 revoke execute on function cloud_drive_dashboard() from public, anon, authenticated;
 revoke execute on function register_login_failure(text, integer) from public, anon, authenticated;
+revoke execute on function reserve_login_attempt(text[], integer[], integer) from public, anon, authenticated;
+revoke execute on function refund_login_attempt(text[]) from public, anon, authenticated;
+revoke execute on function favorites_page(integer, integer) from public, anon, authenticated;
 revoke execute on function delete_folder(uuid) from public, anon, authenticated;
 revoke execute on function copy_folder(uuid, uuid) from public, anon, authenticated;
 revoke execute on function restore_folder(uuid) from public, anon, authenticated;
@@ -472,6 +538,9 @@ revoke execute on function purge_file(uuid) from public, anon, authenticated;
 revoke execute on function purge_trashed_files(timestamptz) from public, anon, authenticated;
 grant execute on function cloud_drive_dashboard() to service_role;
 grant execute on function register_login_failure(text, integer) to service_role;
+grant execute on function reserve_login_attempt(text[], integer[], integer) to service_role;
+grant execute on function refund_login_attempt(text[]) to service_role;
+grant execute on function favorites_page(integer, integer) to service_role;
 grant execute on function delete_folder(uuid) to service_role;
 grant execute on function copy_folder(uuid, uuid) to service_role;
 grant execute on function restore_folder(uuid) to service_role;
