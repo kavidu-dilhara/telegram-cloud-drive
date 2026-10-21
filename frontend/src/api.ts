@@ -7,15 +7,26 @@ export class ApiError extends Error {
 }
 
 let token: string | null = null;
-let onUnauthorized: (() => void) | null = null;
+/** Called when a signed-in request gets 401. Resolves true if the session was silently renewed. */
+let onUnauthorized: (() => Promise<boolean>) | null = null;
+let recovering: Promise<boolean> | null = null;
 
 /** Bearer token kept in memory only. The HttpOnly cookie is the primary session; the token is a fallback for webviews that block cookies. */
 export const setToken = (value: string | null) => {
   token = value;
 };
-export const setUnauthorizedHandler = (handler: (() => void) | null) => {
+export const setUnauthorizedHandler = (handler: (() => Promise<boolean>) | null) => {
   onUnauthorized = handler;
 };
+
+/** One recovery at a time: requests that fail together wait for the same attempt. */
+function recoverSession(): Promise<boolean> {
+  if (!onUnauthorized) return Promise.resolve(false);
+  recovering ??= onUnauthorized().catch(() => false).finally(() => {
+    recovering = null;
+  });
+  return recovering;
+}
 
 /** Plain-language text for errors that did not come from our own API (hosting error pages, proxies). */
 function describeHttpFailure(status: number): string {
@@ -36,20 +47,26 @@ export async function api<T>(
   init: RequestInit & { json?: unknown; quiet401?: boolean } = {},
 ): Promise<T> {
   const { json, quiet401, ...rest } = init;
-  const headers: Record<string, string> = { ...(rest.headers as Record<string, string> | undefined) };
-  if (json !== undefined) headers["Content-Type"] = "application/json";
-  if (token) headers.Authorization = `Bearer ${token}`;
+  const send = async (): Promise<Response> => {
+    const headers: Record<string, string> = { ...(rest.headers as Record<string, string> | undefined) };
+    if (json !== undefined) headers["Content-Type"] = "application/json";
+    if (token) headers.Authorization = `Bearer ${token}`;
+    try {
+      return await fetch(path, {
+        ...rest,
+        headers,
+        credentials: "include",
+        body: json !== undefined ? JSON.stringify(json) : rest.body,
+      });
+    } catch {
+      throw new ApiError("Cannot reach the server. Check your connection and try again.", 0);
+    }
+  };
 
-  let response: Response;
-  try {
-    response = await fetch(path, {
-      ...rest,
-      headers,
-      credentials: "include",
-      body: json !== undefined ? JSON.stringify(json) : rest.body,
-    });
-  } catch {
-    throw new ApiError("Cannot reach the server. Check your connection and try again.", 0);
+  let response = await send();
+  // The session ended (for example after 12 hours): renew it quietly and repeat the request once.
+  if (response.status === 401 && !quiet401 && !PUBLIC_PATHS.includes(path) && await recoverSession()) {
+    response = await send();
   }
 
   if (!response.ok) {
@@ -59,7 +76,6 @@ export async function api<T>(
     } catch {
       /* not JSON: the platform or proxy answered instead of the backend, keep the explanation */
     }
-    if (response.status === 401 && !quiet401 && !PUBLIC_PATHS.includes(path)) onUnauthorized?.();
     throw new ApiError(message, response.status);
   }
   return (await response.json()) as T;

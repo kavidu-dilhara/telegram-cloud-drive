@@ -57,6 +57,13 @@ const initialPage = (): Page => {
 
 type Phase = "loading" | "unauth" | "ready";
 
+/** The explanation shown on the login screen when Telegram sign-in did not work. */
+function telegramFailureNotice(caught: unknown): string {
+  return caught instanceof ApiError && caught.status === 401
+    ? "Your Telegram session is out of date. Close Cloud Drive completely and open it again from the bot."
+    : `Cloud Drive could not reach its server. ${messageOf(caught, "")}`.trim();
+}
+
 function Shell() {
   const toast = useToast();
   const [phase, setPhase] = useState<Phase>("loading");
@@ -66,6 +73,8 @@ function Shell() {
   const [folders, setFolders] = useState<FolderRow[]>([]);
   const [page, setPage] = useState<Page>(initialPage);
   const firstRender = useRef(true);
+  const phaseRef = useRef<Phase>("loading");
+  phaseRef.current = phase;
 
   const reloadFolders = useCallback(async () => {
     try {
@@ -78,10 +87,11 @@ function Shell() {
   }, [toast]);
 
   const loadAll = useCallback(async () => {
+    // quiet401: signing in is handled by the caller, so a 401 here must not trigger the "session ended" handler.
     const [me, loadedSettings, loadedFolders] = await Promise.all([
       api<SessionInfo>("/api/auth/me", { quiet401: true }),
-      api<Settings>("/api/settings"),
-      api<FolderRow[]>("/api/folders?all=1"),
+      api<Settings>("/api/settings", { quiet401: true }),
+      api<FolderRow[]>("/api/folders?all=1", { quiet401: true }),
     ]);
     setSession(me);
     setSettings({ ...DEFAULT_SETTINGS, ...loadedSettings });
@@ -89,14 +99,32 @@ function Shell() {
     setPhase("ready");
   }, []);
 
+  /** A session that ended while the app was open: sign in with Telegram again (its launch data stays valid for 24 hours). */
+  const recoverSession = useCallback(async (): Promise<boolean> => {
+    if (phaseRef.current !== "ready") return false; // start-up and sign-out handle their own messages
+    setToken(null);
+    const initData = telegramInitData();
+    if (!initData) {
+      setNotice("Your session ended. Please sign in again.");
+      setPhase("unauth");
+      return false;
+    }
+    try {
+      const result = await api<{ token: string }>("/api/auth/telegram", { method: "POST", json: { initData } });
+      setToken(result.token);
+      await loadAll();
+      return true;
+    } catch (caught) {
+      setNotice(telegramFailureNotice(caught));
+      setPhase("unauth");
+      return false;
+    }
+  }, [loadAll]);
+
   // ---- sign-in on start: Telegram first, then an existing browser cookie.
   useEffect(() => {
     initTelegram();
-    setUnauthorizedHandler(() => {
-      setToken(null);
-      setNotice("Your session ended. Please sign in again.");
-      setPhase("unauth");
-    });
+    setUnauthorizedHandler(recoverSession);
     (async () => {
       const initData = telegramInitData();
       let telegramProblem: string | undefined;
@@ -108,9 +136,7 @@ function Shell() {
           });
           setToken(result.token);
         } catch (caught) {
-          telegramProblem = caught instanceof ApiError && caught.status === 401
-            ? "Your Telegram session is out of date. Close Cloud Drive completely and open it again from the bot."
-            : `Cloud Drive could not reach its server. ${messageOf(caught, "")}`.trim();
+          telegramProblem = telegramFailureNotice(caught);
         }
       }
       try {
@@ -121,7 +147,7 @@ function Shell() {
       }
     })();
     return () => setUnauthorizedHandler(null);
-  }, [loadAll]);
+  }, [loadAll, recoverSession]);
 
   // ---- theme, density and Telegram chrome colours
   useEffect(() => {
