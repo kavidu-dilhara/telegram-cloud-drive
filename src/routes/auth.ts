@@ -7,9 +7,9 @@ import { maybeRunMaintenance } from "../maintenance.ts";
 import {
   clearFailures,
   clientIp,
-  isLimited,
   type LimitRule,
-  recordFailure,
+  refundAttempt,
+  reserveAttempt,
   ThrottleUnavailableError,
 } from "../rateLimit.ts";
 import {
@@ -18,10 +18,9 @@ import {
   FRESH_TELEGRAM_MS,
   hashPassword,
   passwordProblem,
-  PBKDF2_ITERATIONS,
   type SessionMethod,
   verifyMiniAppInitData,
-  verifyPassword,
+  verifyPasswordCompat,
   verifySession,
 } from "../security.ts";
 
@@ -29,14 +28,17 @@ const COOKIE = "drive_session";
 const loginName = (value: unknown): value is string =>
   typeof value === "string" && /^[a-zA-Z0-9._-]{3,64}$/.test(value);
 
-/** A ready response when the attempt must be refused: limit reached (429) or throttling unavailable (503). */
+/**
+ * Counts this attempt (atomically, before any slow password work) and returns a ready response when it must be
+ * refused: limit reached (429) or throttling unavailable (503). Null means the attempt may go ahead.
+ */
 async function throttleBlock(
   c: import("hono").Context,
   rules: LimitRule[],
   tooMany: string,
 ): Promise<Response | null> {
   try {
-    if (!await isLimited(rules)) return null;
+    if (await reserveAttempt(rules)) return null;
     c.header("Retry-After", "900");
     return fail(c, tooMany, 429);
   } catch (error) {
@@ -205,28 +207,34 @@ publicAuth.post("/password/login", async (c) => {
   );
   if (blocked) return blocked;
 
-  const row = await ownerRow();
+  let row: OwnerRow | null;
+  try {
+    row = await ownerRow();
+  } catch (error) {
+    await refundAttempt(keys); // an outage is not the visitor's failed attempt
+    throw error;
+  }
   const known = Boolean(
     row?.password_enabled && row.password_hash && row.password_salt && row.login_username === username,
   );
   let valid = false;
+  let needsUpgrade = false;
   if (known && row) {
-    valid = await verifyPassword(
+    ({ valid, needsUpgrade } = await verifyPasswordCompat(
       body.password,
       row.password_salt!,
       row.password_hash!,
-      row.password_iterations ?? 210_000,
-    );
+      row.password_iterations,
+    ));
   } else {
     await burnPasswordCheck(body.password);
   }
-  if (!valid || !row) {
-    await recordFailure(keys);
-    return fail(c, "Invalid username or password", 401);
-  }
+  // A wrong password needs no bookkeeping: this attempt was already counted before the check ran.
+  if (!valid || !row) return fail(c, "Invalid username or password", 401);
 
   await clearFailures([keys[0], keys[1]]);
-  if ((row.password_iterations ?? 210_000) < PBKDF2_ITERATIONS) {
+  await refundAttempt([keys[2]]); // successful sign-ins do not use up the shared limit
+  if (needsUpgrade) {
     // Silently upgrade older hashes to the current work factor.
     const upgraded = await hashPassword(body.password);
     await db.from("users").update({
@@ -331,16 +339,13 @@ privateAuth.patch("/password", async (c) => {
     );
     if (blocked) return blocked;
     const ok = typeof body.current_password === "string" &&
-      await verifyPassword(
+      (await verifyPasswordCompat(
         body.current_password,
         row.password_salt,
         row.password_hash,
-        row.password_iterations ?? 210_000,
-      );
-    if (!ok) {
-      await recordFailure([limitKey]);
-      return fail(c, "Current password is incorrect", 403);
-    }
+        row.password_iterations,
+      )).valid;
+    if (!ok) return fail(c, "Current password is incorrect", 403); // already counted by throttleBlock
     await clearFailures([limitKey]);
   }
 
