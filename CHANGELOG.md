@@ -34,6 +34,17 @@
   sign-in attempt.
 - The Trash list pages through every deleted folder and file (it was cut off at 200 folders). Telegram
   `/trash` says how many more folders there are when it cannot list them all.
+- Older password hashes keep working after an upgrade: the iteration count column no longer defaults to the
+  new work factor (so rows hashed before it existed stay at the original 210,000), and sign-in also recognises
+  rows an earlier version of the schema had mislabelled. Re-run `supabase/schema.sql`.
+- Sign-in attempts are now counted atomically before the slow password check, so a burst of parallel guesses
+  can no longer slip past the limit. Successful sign-ins do not use up the shared limit.
+- Telegram albums share one status message that shows how every file went, including failures.
+- Telegram `/favorites` pages and counts only favorites of active files, so pages are never short or
+  misnumbered.
+- When the Mini App session expires (12 hours) it signs in again with Telegram and repeats the request,
+  instead of dead-ending on the login screen. The useful Telegram sign-in message is no longer replaced by
+  "Your session ended".
 - A folder can no longer be copied into itself or one of its subfolders, and copying a folder is safe even if
   the folder hierarchy is ever damaged. Re-run `supabase/schema.sql` to update the database function.
 - Only one share link per file is enforced by the database. Re-running `supabase/schema.sql` removes older
