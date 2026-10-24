@@ -5,6 +5,7 @@ import {
   useCallback,
   useContext,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { Copy, Send } from "lucide-react";
@@ -70,17 +71,37 @@ export async function copyText(text: string): Promise<boolean> {
   }
 }
 
+/** The answer a caller gets when its dialog is replaced by another one: the same as pressing Cancel. */
+function cancelRequest(request: Request) {
+  if (request.kind === "confirm") request.resolve(false);
+  else if (request.kind === "link") request.resolve();
+  else request.resolve(null);
+}
+
 export function DialogProvider({ children }: { children: ReactNode }) {
   const [request, setRequest] = useState<Request | null>(null);
+  const current = useRef<Request | null>(null);
 
-  const api = useMemo<DialogApi>(() => ({
-    confirm: (options) => new Promise((resolve) => setRequest({ kind: "confirm", options, resolve })),
-    prompt: (options) => new Promise((resolve) => setRequest({ kind: "prompt", options, resolve })),
-    pickFolder: (options) => new Promise((resolve) => setRequest({ kind: "folder", options, resolve })),
-    showLink: (options) => new Promise((resolve) => setRequest({ kind: "link", options, resolve })),
-  }), []);
+  const api = useMemo<DialogApi>(() => {
+    // Opening a dialog while another is open cancels the first one, so its caller is never left waiting forever.
+    const open = (next: Request) => {
+      const previous = current.current;
+      current.current = next;
+      setRequest(next);
+      if (previous) cancelRequest(previous);
+    };
+    return {
+      confirm: (options) => new Promise((resolve) => open({ kind: "confirm", options, resolve })),
+      prompt: (options) => new Promise((resolve) => open({ kind: "prompt", options, resolve })),
+      pickFolder: (options) => new Promise((resolve) => open({ kind: "folder", options, resolve })),
+      showLink: (options) => new Promise((resolve) => open({ kind: "link", options, resolve })),
+    };
+  }, []);
 
-  const close = useCallback(() => setRequest(null), []);
+  const close = useCallback(() => {
+    current.current = null;
+    setRequest(null);
+  }, []);
 
   return (
     <DialogContext.Provider value={api}>
