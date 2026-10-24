@@ -68,22 +68,56 @@ export function extensionOf(fileName: string): string | null {
   return extension ? extension.slice(0, 12) : null;
 }
 
+/** Everything after the last dot exactly as stored (any characters, any length), or null. The app shows the same. */
+export function suffixOf(fileName: string): string | null {
+  const index = fileName.lastIndexOf(".");
+  return index <= 0 || index === fileName.length - 1 ? null : fileName.slice(index + 1);
+}
+
 /**
  * Rename helper: only the base name changes, the stored extension is always kept.
  * A trailing ".ext" typed by the user is not duplicated.
  */
 export function renameKeepingExtension(currentName: string, requestedName: string): string | null {
   const requested = requestedName.trim().replace(/[\r\n\0/\\]/g, " ").replace(/\s+/g, " ");
-  const extension = extensionOf(currentName);
+  const suffix = suffixOf(currentName);
   let base = requested;
-  if (extension && requested.toLowerCase().endsWith(`.${extension}`)) {
-    base = requested.slice(0, -(extension.length + 1));
+  if (suffix && requested.toLowerCase().endsWith(`.${suffix.toLowerCase()}`)) {
+    base = requested.slice(0, -(suffix.length + 1));
   }
   base = base.trim().replace(/^\.+/, "").trim();
   if (!base) return null;
-  const name = extension ? `${base}.${currentName.slice(currentName.lastIndexOf(".") + 1)}` : base;
+  const name = suffix ? `${base}.${suffix}` : base;
   return name.length > 255 ? null : name;
 }
+
+/** A whole-number query parameter, clamped to min..max. Anything missing or not a number gives the fallback. */
+export function intParam(value: string | undefined, fallback: number, min: number, max: number): number {
+  if (value === undefined || value.trim() === "") return fallback;
+  const number = Math.floor(Number(value));
+  return Number.isFinite(number) ? Math.min(max, Math.max(min, number)) : fallback;
+}
+
+/**
+ * A Content-Disposition value that is valid for ANY file name. HTTP headers must be Latin-1, so the name is sent
+ * twice: a plain-ASCII fallback and the exact UTF-8 name (RFC 6266 / 5987) that browsers prefer.
+ */
+export function contentDisposition(fileName: string, type: "inline" | "attachment" = "inline"): string {
+  const clean = fileName.replace(/[\r\n\0]/g, " ").trim() || "file";
+  const ascii = clean.replace(/[^\x20-\x7e]|["\\%]/g, "_");
+  try {
+    const encoded = encodeURIComponent(clean).replace(
+      /['()*]/g,
+      (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+    );
+    return `${type}; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+  } catch {
+    return `${type}; filename="${ascii}"`; // a name with broken UTF-16: the ASCII fallback is all we can send
+  }
+}
+
+/** Telegram waits for the webhook answer; long saves are acknowledged after this long and finish in the background. */
+export const WEBHOOK_TIMEOUT_MS = 25_000;
 
 /** Single-line, length-limited text for messages and logs. */
 export const singleLine = (value: unknown, max = 120) =>
