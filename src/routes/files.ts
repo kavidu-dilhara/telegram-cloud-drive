@@ -9,7 +9,15 @@ import {
   PUBLIC_FILE_COLUMNS,
 } from "../db.ts";
 import { type AppEnv, type Ctx, fail, jsonBody } from "../http.ts";
-import { escapeLike, isUuid, parseIds, previewImageType, renameKeepingExtension } from "../lib.ts";
+import {
+  contentDisposition,
+  escapeLike,
+  intParam,
+  isUuid,
+  parseIds,
+  previewImageType,
+  renameKeepingExtension,
+} from "../lib.ts";
 import { purgeTrash } from "../maintenance.ts";
 import { type ChannelMessage, deleteChannelMessages } from "../telegram.ts";
 
@@ -26,8 +34,8 @@ fileRoutes.get("/files", async (c) => {
   const folderId = c.req.query("folder_id");
   const type = c.req.query("type")?.trim().toLowerCase();
   const extension = c.req.query("extension")?.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
-  const page = Math.max(1, Math.min(100000, Number(c.req.query("page") ?? "1") || 1));
-  const limit = Math.max(1, Math.min(100, Number(c.req.query("limit") ?? "50") || 50));
+  const page = intParam(c.req.query("page"), 1, 1, 100000);
+  const limit = intParam(c.req.query("limit"), 50, 1, 100);
   const sortKey = c.req.query("sort");
   const sort = sortKey === "name" ? "file_name" : sortKey === "size" ? "file_size" : "created_at";
   const ascending = c.req.query("direction") === "asc";
@@ -44,7 +52,7 @@ fileRoutes.get("/files", async (c) => {
     else if (folderId) query = query.eq("folder_id", folderId);
   }
   if (search) query = query.ilike("file_name", `%${escapeLike(search)}%`);
-  if (type && TYPE_PREFIX[type]) query = query.ilike("mime_type", TYPE_PREFIX[type]);
+  if (type && Object.hasOwn(TYPE_PREFIX, type)) query = query.ilike("mime_type", TYPE_PREFIX[type]);
   if (type === "document") {
     query = query.not("mime_type", "ilike", TYPE_PREFIX.image).not("mime_type", "ilike", TYPE_PREFIX.video)
       .not("mime_type", "ilike", TYPE_PREFIX.audio);
@@ -189,8 +197,8 @@ fileRoutes.post("/files/batch/restore", async (c) => {
 const TRASH_FOLDER_COLUMNS = "id,folder_id,parent_id,name,path,folder_count,file_count,deleted_at";
 
 fileRoutes.get("/trash", async (c) => {
-  const page = Math.max(1, Math.min(100000, Number(c.req.query("page") ?? "1") || 1));
-  const limit = Math.max(1, Math.min(100, Number(c.req.query("limit") ?? "50") || 50));
+  const page = intParam(c.req.query("page"), 1, 1, 100000);
+  const limit = intParam(c.req.query("limit"), 50, 1, 100);
   const offset = (page - 1) * limit;
 
   // One list, paged as a whole: deleted folders first, then files. Files inside a deleted folder belong to that
@@ -392,7 +400,7 @@ fileRoutes.get("/files/:id/preview", async (c) => {
 
   const headers: Record<string, string> = {
     "Content-Type": mime,
-    "Content-Disposition": `inline; filename="${String(file.file_name).replace(/[\r\n"\\]/g, "_")}"`,
+    "Content-Disposition": contentDisposition(String(file.file_name)),
     "Cache-Control": "private, max-age=300",
     "X-Content-Type-Options": "nosniff",
     // Defence in depth: even if this URL is opened as a page, nothing in it may run or load.
