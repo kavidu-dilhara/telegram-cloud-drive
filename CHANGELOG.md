@@ -45,6 +45,26 @@
 - When the Mini App session expires (12 hours) it signs in again with Telegram and repeats the request,
   instead of dead-ending on the login screen. The useful Telegram sign-in message is no longer replaced by
   "Your session ended".
+- Image previews work for file names in any language (the old header made names such as `ස.png` fail with a
+  500).
+- Renaming a file keeps its extension even when the extension has no Latin letters or digits, and typing the
+  extension yourself never duplicates it, whatever its length.
+- Copying a folder with a very long name no longer fails: the copy's name is shortened to fit the
+  100-character limit.
+- `?type=` on the file list only accepts the real types, and `page` / `limit` are always whole numbers.
+- A slow Telegram update is acknowledged after 25 seconds and finishes in the background, instead of answering
+  500 and making Telegram send it again.
+- Cancelling a delete keeps your selection, a failed batch action refreshes the list, and a mixed selection is
+  reported before the confirmation dialog. A new dialog cancels the one it replaces.
+- Bot buttons always stop their spinner when an action fails, and Telegram's "message is not modified" is no
+  longer reported as a failure.
+- A database outage during Telegram sign-in now answers 503 ("temporarily unavailable") instead of telling you
+  your Telegram session is out of date.
+- Folder, setting and duplicate checks no longer swallow database errors: during an outage an upload fails
+  with a "send it again" message instead of landing in the wrong folder or skipping duplicate detection.
+- "Sign out everywhere" and credential changes are single atomic database steps and can no longer silently do
+  nothing. Re-run `supabase/schema.sql`.
+- Image previews also renew an expired session. The unused `register_login_failure` function is removed.
 - A folder can no longer be copied into itself or one of its subfolders, and copying a folder is safe even if
   the folder hierarchy is ever damaged. Re-run `supabase/schema.sql` to update the database function.
 - Only one share link per file is enforced by the database. Re-running `supabase/schema.sql` removes older
