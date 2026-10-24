@@ -1,3 +1,4 @@
+import { answerFailure, editQuietly } from "./botErrors.ts";
 import { AlbumReports } from "./album.ts";
 import { type Context, InlineKeyboard } from "grammy";
 import { config } from "./config.ts";
@@ -28,6 +29,7 @@ async function guarded(ctx: Context, failure: string, action: () => Promise<void
     await action();
   } catch (error) {
     console.error(failure, error);
+    await answerFailure(ctx);
     await ctx.reply(
       `⚠️ ${failure}\n\nPlease try again in a moment. If it keeps happening, open Cloud Drive → Settings to check the live status.`,
       { reply_markup: appButton() },
@@ -36,7 +38,7 @@ async function guarded(ctx: Context, failure: string, action: () => Promise<void
 }
 
 const show = (ctx: Context, text: string, reply_markup: InlineKeyboard, edit: boolean) =>
-  edit ? ctx.editMessageText(text, { reply_markup }) : ctx.reply(text, { reply_markup });
+  edit ? editQuietly(() => ctx.editMessageText(text, { reply_markup })) : ctx.reply(text, { reply_markup });
 
 // ------------------------------------------------------------- share links
 
@@ -399,7 +401,7 @@ bot.callbackQuery(/^fav:([0-9a-f-]{36})(?::(\d+))?$/i, async (ctx) => {
     }
     await ctx.answerCallbackQuery({ text: existing ? "Removed from Favorites" : "Added to Favorites ⭐" });
     const view = await favoritesView(pageNumber(ctx.match[2]));
-    await ctx.editMessageText(view.text, { reply_markup: view.keyboard });
+    await editQuietly(() => ctx.editMessageText(view.text, { reply_markup: view.keyboard }));
   });
 });
 
@@ -417,10 +419,12 @@ bot.callbackQuery(/^rv:([0-9a-f-]{36})$/i, async (ctx) => {
     if (data) await logAction("share_revoke", data.file_id);
     await ctx.answerCallbackQuery({ text: data ? "Link revoked" : "Link already removed" });
     const view = await sharedView();
-    await ctx.editMessageText(view.text, {
-      reply_markup: view.keyboard,
-      link_preview_options: { is_disabled: true },
-    });
+    await editQuietly(() =>
+      ctx.editMessageText(view.text, {
+        reply_markup: view.keyboard,
+        link_preview_options: { is_disabled: true },
+      })
+    );
   });
 });
 
