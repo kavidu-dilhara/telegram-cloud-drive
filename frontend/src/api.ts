@@ -42,32 +42,37 @@ const PUBLIC_PATHS = [
   "/api/auth/logout",
 ];
 
-export async function api<T>(
-  path: string,
-  init: RequestInit & { json?: unknown; quiet401?: boolean } = {},
-): Promise<T> {
-  const { json, quiet401, ...rest } = init;
+/** One request with the current credentials. A 401 on a signed-in route renews the session and repeats it once. */
+async function requestWithSession(path: string, init: RequestInit & { quiet401?: boolean }, body?: BodyInit | null) {
+  const { quiet401, ...rest } = init;
   const send = async (): Promise<Response> => {
     const headers: Record<string, string> = { ...(rest.headers as Record<string, string> | undefined) };
-    if (json !== undefined) headers["Content-Type"] = "application/json";
     if (token) headers.Authorization = `Bearer ${token}`;
     try {
-      return await fetch(path, {
-        ...rest,
-        headers,
-        credentials: "include",
-        body: json !== undefined ? JSON.stringify(json) : rest.body,
-      });
+      return await fetch(path, { ...rest, headers, credentials: "include", body });
     } catch {
       throw new ApiError("Cannot reach the server. Check your connection and try again.", 0);
     }
   };
-
-  let response = await send();
-  // The session ended (for example after 12 hours): renew it quietly and repeat the request once.
+  const response = await send();
   if (response.status === 401 && !quiet401 && !PUBLIC_PATHS.includes(path) && await recoverSession()) {
-    response = await send();
+    return send();
   }
+  return response;
+}
+
+export async function api<T>(
+  path: string,
+  init: RequestInit & { json?: unknown; quiet401?: boolean } = {},
+): Promise<T> {
+  const { json, ...rest } = init;
+  const headers: Record<string, string> = { ...(rest.headers as Record<string, string> | undefined) };
+  if (json !== undefined) headers["Content-Type"] = "application/json";
+  const response = await requestWithSession(
+    path,
+    { ...rest, headers },
+    json !== undefined ? JSON.stringify(json) : rest.body,
+  );
 
   if (!response.ok) {
     let message = describeHttpFailure(response.status);
@@ -86,10 +91,9 @@ export const messageOf = (
   fallback: string,
 ) => (error instanceof Error && error.message ? error.message : fallback);
 
-/** Loads a protected image as a blob URL, sending the same credentials as every other request. */
+/** Loads a protected image as a blob URL, with the same credentials and session renewal as every other request. */
 export async function fetchBlobUrl(path: string): Promise<string> {
-  const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
-  const response = await fetch(path, { headers, credentials: "include" });
+  const response = await requestWithSession(path, {});
   if (!response.ok) throw new ApiError("Preview unavailable", response.status);
   return URL.createObjectURL(await response.blob());
 }
