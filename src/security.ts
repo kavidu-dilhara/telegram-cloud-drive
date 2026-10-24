@@ -149,7 +149,6 @@ export async function verifyPassword(
   }
 }
 
-/** Burns the same CPU time as a real check so unknown usernames are not detectable by timing. */
 /** Work factor of hashes made before the iteration count was stored with each password. */
 export const LEGACY_PBKDF2_ITERATIONS = 210_000;
 
