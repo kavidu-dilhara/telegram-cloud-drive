@@ -175,15 +175,36 @@ language sql stable security definer set search_path = public as $$
       + (select count(*) from trashed_folders);
 $$;
 
-create or replace function register_login_failure(p_key text, p_window_seconds integer)
+-- Replaced by reserve_login_attempt (below), which counts attempts atomically before the password check.
+drop function if exists register_login_failure(text, integer);
+
+-- Signs every device out by bumping the owner's session version in ONE atomic step. Creates the owner row if it does
+-- not exist yet (so the call can never silently do nothing).
+create or replace function bump_session_version(p_telegram_id bigint)
 returns integer
 language sql security definer set search_path = public as $$
-  insert into login_attempts as la (key, failures, window_ends_at)
-  values (p_key, 1, now() + make_interval(secs => p_window_seconds))
-  on conflict (key) do update set
-    failures = case when la.window_ends_at < now() then 1 else la.failures + 1 end,
-    window_ends_at = case when la.window_ends_at < now() then now() + make_interval(secs => p_window_seconds) else la.window_ends_at end
-  returning failures;
+  insert into users (telegram_id, session_version) values (p_telegram_id, 2)
+  on conflict (telegram_id) do update set session_version = users.session_version + 1
+  returning session_version;
+$$;
+
+-- Saves the owner's browser credentials and bumps the session version in ONE atomic step; returns the new version.
+-- A username that is already taken raises unique_violation (23505).
+create or replace function set_owner_credentials(
+  p_telegram_id bigint, p_username text, p_hash text, p_salt text, p_iterations integer
+)
+returns integer
+language sql security definer set search_path = public as $$
+  insert into users (telegram_id, login_username, password_hash, password_salt, password_iterations, password_enabled, session_version)
+  values (p_telegram_id, p_username, p_hash, p_salt, p_iterations, true, 2)
+  on conflict (telegram_id) do update set
+    login_username = excluded.login_username,
+    password_hash = excluded.password_hash,
+    password_salt = excluded.password_salt,
+    password_iterations = excluded.password_iterations,
+    password_enabled = true,
+    session_version = users.session_version + 1
+  returning session_version;
 $$;
 
 -- Counts one sign-in attempt against every key in ONE atomic step, BEFORE the slow password check, so a burst of
@@ -386,6 +407,7 @@ declare
   v_src folders%rowtype;
   v_name text;
   v_suffix integer := 2;
+  v_tag text;
   v_row record;
   v_new uuid;
   v_root uuid;
@@ -410,9 +432,11 @@ begin
     raise exception 'invalid_destination' using errcode = '22023';
   end if;
 
-  v_name := v_src.name || ' (copy)';
+  -- Names are limited to 100 characters: a long source name is shortened so the suffix always fits.
+  v_name := left(v_src.name, 100 - length(' (copy)')) || ' (copy)';
   while exists (select 1 from folders where parent_id is not distinct from p_parent and lower(name) = lower(v_name)) loop
-    v_name := v_src.name || ' (copy ' || v_suffix || ')';
+    v_tag := ' (copy ' || v_suffix || ')';
+    v_name := left(v_src.name, 100 - length(v_tag)) || v_tag;
     v_suffix := v_suffix + 1;
   end loop;
 
@@ -525,7 +549,8 @@ $$;
 
 -- Only the backend (service role) may call these functions; the public API keys may not.
 revoke execute on function cloud_drive_dashboard() from public, anon, authenticated;
-revoke execute on function register_login_failure(text, integer) from public, anon, authenticated;
+revoke execute on function bump_session_version(bigint) from public, anon, authenticated;
+revoke execute on function set_owner_credentials(bigint, text, text, text, integer) from public, anon, authenticated;
 revoke execute on function reserve_login_attempt(text[], integer[], integer) from public, anon, authenticated;
 revoke execute on function refund_login_attempt(text[]) from public, anon, authenticated;
 revoke execute on function favorites_page(integer, integer) from public, anon, authenticated;
@@ -537,7 +562,8 @@ revoke execute on function purge_trashed_folder(uuid) from public, anon, authent
 revoke execute on function purge_file(uuid) from public, anon, authenticated;
 revoke execute on function purge_trashed_files(timestamptz) from public, anon, authenticated;
 grant execute on function cloud_drive_dashboard() to service_role;
-grant execute on function register_login_failure(text, integer) to service_role;
+grant execute on function bump_session_version(bigint) to service_role;
+grant execute on function set_owner_credentials(bigint, text, text, text, integer) to service_role;
 grant execute on function reserve_login_attempt(text[], integer[], integer) to service_role;
 grant execute on function refund_login_attempt(text[]) to service_role;
 grant execute on function favorites_page(integer, integer) to service_role;
