@@ -1,3 +1,4 @@
+import { ServiceUnavailableError } from "./errors.ts";
 import { createClient } from "@supabase/supabase-js";
 import { config } from "./config.ts";
 
@@ -82,13 +83,22 @@ export async function allFolders(): Promise<FolderRow[]> {
   }
 }
 
+/** True when the folder exists. A database failure throws, so it is never mistaken for "folder not found". */
 export async function folderExists(id: string | null | undefined) {
   if (id === null || id === undefined) return true;
-  const { data } = await db.from("folders").select("id").eq("id", id).maybeSingle();
+  const { data, error } = await db.from("folders").select("id").eq("id", id).maybeSingle();
+  if (error) {
+    console.error("Unable to check a folder", error.message);
+    throw new ServiceUnavailableError("Unable to check the folder");
+  }
   return !!data;
 }
 
 export async function getSetting<T>(key: string): Promise<T | undefined> {
-  const { data } = await db.from("settings").select("value").eq("key", key).maybeSingle();
+  const { data, error } = await db.from("settings").select("value").eq("key", key).maybeSingle();
+  if (error) {
+    console.error("Unable to read a setting", key, error.message);
+    throw new ServiceUnavailableError("Unable to read settings");
+  }
   return data?.value as T | undefined;
 }

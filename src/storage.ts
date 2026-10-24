@@ -1,3 +1,4 @@
+import { ServiceUnavailableError } from "./errors.ts";
 import type { Message } from "grammy/types";
 import { config } from "./config.ts";
 import { db, folderExists, getSetting, logAction } from "./db.ts";
@@ -80,17 +81,19 @@ export async function storeIncoming(message: Message): Promise<StoreResult> {
   if (inFlight.has(key)) return { status: "duplicate", inTrash: false };
   inFlight.add(key);
   try {
-    const { data: sameMessage } = await db.from("files").select("id,status").match(source).is(
-      "copy_of_file_id",
-      null,
-    ).maybeSingle();
+    const { data: sameMessage, error: sameMessageError } = await db.from("files").select("id,status").match(
+      source,
+    )
+      .is("copy_of_file_id", null).maybeSingle();
+    if (sameMessageError) throw new ServiceUnavailableError("Unable to check for duplicates");
     if (sameMessage) return { status: "duplicate", inTrash: sameMessage.status === "trashed" };
 
     if (item.uniqueId) {
-      const { data: sameContent } = await db.from("files").select("id,status").eq(
+      const { data: sameContent, error: sameContentError } = await db.from("files").select("id,status").eq(
         "telegram_file_unique_id",
         item.uniqueId,
       ).is("copy_of_file_id", null).limit(1).maybeSingle();
+      if (sameContentError) throw new ServiceUnavailableError("Unable to check for duplicates");
       if (sameContent) return { status: "duplicate", inTrash: sameContent.status === "trashed" };
     }
 

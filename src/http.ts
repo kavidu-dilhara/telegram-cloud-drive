@@ -1,17 +1,12 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { ServiceUnavailableError } from "./errors.ts";
+
+export { ServiceUnavailableError };
 import type { SessionClaims } from "./security.ts";
 
 export type AppEnv = { Variables: { session: SessionClaims } };
 export type Ctx = Context<AppEnv>;
-
-/** Thrown when the database cannot answer, so the request fails as a service problem (503), not as bad input. */
-export class ServiceUnavailableError extends Error {
-  constructor(message = "A required service is unavailable") {
-    super(message);
-    this.name = "ServiceUnavailableError";
-  }
-}
 
 /** Global error handler: unavailable dependencies answer 503 (retry shortly); anything else is a plain 500. */
 export function handleError(error: Error, c: Context) {
