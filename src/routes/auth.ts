@@ -82,14 +82,14 @@ export async function currentSessionVersion(): Promise<number> {
   return Number(data?.session_version ?? 1);
 }
 
+/** Signs every device out. One atomic database step (it cannot lose a concurrent bump or silently do nothing). */
 async function bumpSessionVersion(): Promise<number> {
-  const next = (await currentSessionVersion()) + 1;
-  const { error } = await db.from("users").update({ session_version: next }).eq(
-    "telegram_id",
-    config.ownerId,
-  );
-  if (error) throw error;
-  return next;
+  const { data, error } = await db.rpc("bump_session_version", { p_telegram_id: config.ownerId });
+  if (error || typeof data !== "number") {
+    console.error("Unable to revoke sessions", error?.message ?? "unexpected answer");
+    throw new SessionStoreUnavailableError("Unable to revoke sessions");
+  }
+  return data;
 }
 
 async function issueSession(c: import("hono").Context, via: SessionMethod, version?: number) {
@@ -172,20 +172,22 @@ publicAuth.get("/method", async (c) => {
 });
 
 publicAuth.post("/telegram", async (c) => {
+  const body = await jsonBody<{ initData?: unknown }>(c);
+  if (!body || typeof body.initData !== "string") return fail(c, "Invalid authentication payload");
+  let user;
   try {
-    const body = await jsonBody<{ initData?: unknown }>(c);
-    if (!body || typeof body.initData !== "string") return fail(c, "Invalid authentication payload");
-    const user = await verifyMiniAppInitData(body.initData);
-    const { error } = await db.from("users").upsert(
-      { telegram_id: user.id, username: user.username ?? null, first_name: user.first_name ?? null },
-      { onConflict: "telegram_id" },
-    );
-    if (error) console.error("Unable to update Telegram user profile", error.message);
-    const token = await issueSession(c, "telegram");
-    return c.json({ ok: true, token });
+    user = await verifyMiniAppInitData(body.initData);
   } catch {
+    // Only a bad or expired launch signature is a 401. A database problem below is reported as 503.
     return fail(c, "Telegram authentication failed", 401);
   }
+  const { error } = await db.from("users").upsert(
+    { telegram_id: user.id, username: user.username ?? null, first_name: user.first_name ?? null },
+    { onConflict: "telegram_id" },
+  );
+  if (error) console.error("Unable to update Telegram user profile", error.message);
+  const token = await issueSession(c, "telegram");
+  return c.json({ ok: true, token });
 });
 
 publicAuth.post("/password/login", async (c) => {
@@ -280,20 +282,20 @@ privateAuth.post("/logout-all", async (c) => {
 
 async function saveCredentials(c: Ctx, username: string, password: string) {
   const credentials = await hashPassword(password);
-  const version = (await currentSessionVersion()) + 1;
-  const { error } = await db.from("users").update({
-    login_username: username,
-    password_hash: credentials.hash,
-    password_salt: credentials.salt,
-    password_iterations: credentials.iterations,
-    password_enabled: true,
-    session_version: version,
-  }).eq("telegram_id", config.ownerId);
-  if (error) {
-    return error.code === "23505"
+  // One atomic step: save the credentials and bump the session version (so every older session is revoked).
+  const { data, error } = await db.rpc("set_owner_credentials", {
+    p_telegram_id: config.ownerId,
+    p_username: username,
+    p_hash: credentials.hash,
+    p_salt: credentials.salt,
+    p_iterations: credentials.iterations,
+  });
+  if (error || typeof data !== "number") {
+    return error?.code === "23505"
       ? fail(c, "That username is already taken", 409)
       : fail(c, "Unable to save browser credentials", 500);
   }
+  const version = data;
   // Every older session is revoked; the current device gets a fresh one.
   const token = await issueSession(c, c.get("session").via, version);
   return { token };
