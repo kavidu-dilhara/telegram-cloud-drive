@@ -151,6 +151,8 @@ export default function FilesPage() {
       return true;
     } catch (caught) {
       toast(messageOf(caught, fallback), { kind: "error" });
+      // A batch may have finished part of its work before failing: show what really happened.
+      refresh();
       return false;
     }
   }
@@ -222,7 +224,8 @@ export default function FilesPage() {
     }
   }
 
-  async function deleteFolders(list: FolderRow[]) {
+  /** Resolves true when the folders were deleted, false when cancelled or failed. */
+  async function deleteFolders(list: FolderRow[]): Promise<boolean> {
     if (settings.confirm_delete) {
       const names = list.length === 1 ? `"${list[0].name}"` : `${list.length} folders`;
       const ok = await dialogs.confirm({
@@ -232,9 +235,9 @@ export default function FilesPage() {
         confirmLabel: "Delete",
         danger: true,
       });
-      if (!ok) return;
+      if (!ok) return false;
     }
-    await attempt(
+    return await attempt(
       async () => {
         let trashed = 0;
         for (const folder of list) {
@@ -335,7 +338,8 @@ export default function FilesPage() {
     );
   }
 
-  async function trashFiles(ids: string[], label: string) {
+  /** Resolves true when the files were moved to Trash, false when cancelled or failed. */
+  async function trashFiles(ids: string[], label: string): Promise<boolean> {
     if (settings.confirm_delete) {
       const ok = await dialogs.confirm({
         title: "Move to Trash?",
@@ -345,7 +349,7 @@ export default function FilesPage() {
         confirmLabel: "Move to Trash",
         danger: true,
       });
-      if (!ok) return;
+      if (!ok) return false;
     }
     const done = await attempt(
       () => api("/api/files/batch/trash", { method: "POST", json: { file_ids: ids } }),
@@ -365,6 +369,7 @@ export default function FilesPage() {
         },
       });
     }
+    return done;
   }
 
   async function toggleFavorite(file: FileRow) {
@@ -419,6 +424,10 @@ export default function FilesPage() {
   ].filter(Boolean).join(" and ");
 
   async function moveSelected(copy: boolean) {
+    if (selectedFiles.size && chosenFolders.length) {
+      toast("Select either files or folders to move or copy at once.", { kind: "info" });
+      return;
+    }
     if (settings.confirm_move) {
       const ok = await dialogs.confirm({
         title: copy ? "Copy selected items?" : "Move selected items?",
@@ -426,10 +435,6 @@ export default function FilesPage() {
         confirmLabel: "Continue",
       });
       if (!ok) return;
-    }
-    if (selectedFiles.size && chosenFolders.length) {
-      toast("Select either files or folders to move or copy at once.", { kind: "info" });
-      return;
     }
     if (selectedFiles.size) {
       if (await moveOrCopyFiles([...selectedFiles], copy)) clearSelection();
@@ -658,7 +663,7 @@ export default function FilesPage() {
                   void trashFiles(
                     [...selectedFiles],
                     `${selectedFiles.size} file${selectedFiles.size === 1 ? "" : "s"}`,
-                  ).then(clearSelection)}
+                  ).then((done) => done && clearSelection())}
               >
                 <Trash2 size={15} aria-hidden="true" /> Trash {selectedFiles.size === 1 ? "file" : "files"}
               </button>
@@ -667,7 +672,7 @@ export default function FilesPage() {
               <button
                 type="button"
                 className="danger"
-                onClick={() => void deleteFolders(chosenFolders).then(clearSelection)}
+                onClick={() => void deleteFolders(chosenFolders).then((done) => done && clearSelection())}
               >
                 <Trash2 size={15} aria-hidden="true" /> Delete{" "}
                 {selectedFolders.size === 1 ? "folder" : "folders"}
