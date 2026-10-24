@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { api, ApiError, setToken, setUnauthorizedHandler } from "../frontend/src/api.ts";
+import { api, ApiError, fetchBlobUrl, setToken, setUnauthorizedHandler } from "../frontend/src/api.ts";
 
 type Call = { path: string; auth: string | null };
 
@@ -120,5 +120,40 @@ Deno.test("renewal can run again for a later expiry, and network errors keep the
     mock.restore();
     setUnauthorizedHandler(null);
     setToken(null);
+  }
+});
+
+Deno.test("image previews renew an expired session too, then load", async () => {
+  setToken("old");
+  setUnauthorizedHandler(() => (setToken("renewed"), Promise.resolve(true)));
+  const mock = mockFetch((_path, auth) =>
+    auth === "Bearer renewed"
+      ? new Response(new Uint8Array([1, 2, 3]), { headers: { "Content-Type": "image/png" } })
+      : unauthorized()
+  );
+  try {
+    const url = await fetchBlobUrl("/api/files/1/preview");
+    assert.match(url, /^blob:/);
+    assert.equal(mock.calls.length, 2);
+    URL.revokeObjectURL(url);
+  } finally {
+    mock.restore();
+    setUnauthorizedHandler(null);
+    setToken(null);
+  }
+});
+
+Deno.test("image previews that cannot be loaded say so (and do not loop)", async () => {
+  setUnauthorizedHandler(() => Promise.resolve(false));
+  const mock = mockFetch(() => unauthorized());
+  try {
+    await assert.rejects(
+      () => fetchBlobUrl("/api/files/1/preview"),
+      (error: ApiError) => error.status === 401 && error.message === "Preview unavailable",
+    );
+    assert.equal(mock.calls.length, 1);
+  } finally {
+    mock.restore();
+    setUnauthorizedHandler(null);
   }
 });
