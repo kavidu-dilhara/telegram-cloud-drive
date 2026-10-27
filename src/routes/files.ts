@@ -1,3 +1,5 @@
+import { logError } from "../redact.ts";
+import { ServiceUnavailableError } from "../errors.ts";
 import { Hono } from "hono";
 import { config } from "../config.ts";
 import {
@@ -10,6 +12,7 @@ import {
 } from "../db.ts";
 import { type AppEnv, type Ctx, fail, jsonBody } from "../http.ts";
 import {
+  chunk,
   contentDisposition,
   escapeLike,
   intParam,
@@ -19,19 +22,22 @@ import {
   renameKeepingExtension,
 } from "../lib.ts";
 import { purgeTrash } from "../maintenance.ts";
-import { type ChannelMessage, deleteChannelMessages } from "../telegram.ts";
+import { type ChannelMessage, kickPendingDeletions } from "../telegram.ts";
 
 export const fileRoutes = new Hono<AppEnv>();
 
 const PREVIEW_LIMIT = 2 * 1024 * 1024;
 const TYPE_PREFIX: Record<string, string> = { image: "image/%", video: "video/%", audio: "audio/%" };
 const now = () => new Date().toISOString();
+/** Ids per database request: 100 UUIDs keep the request URL well under common proxy limits. */
+const IN_CHUNK = 100;
 
 // ------------------------------------------------------------------- listing
 
 fileRoutes.get("/files", async (c) => {
   const search = (c.req.query("q") ?? "").trim().slice(0, 100);
   const folderId = c.req.query("folder_id");
+  if (folderId && folderId !== "root" && !isUuid(folderId)) return fail(c, "Invalid folder id");
   const type = c.req.query("type")?.trim().toLowerCase();
   const extension = c.req.query("extension")?.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
   const page = intParam(c.req.query("page"), 1, 1, 100000);
@@ -47,9 +53,10 @@ fileRoutes.get("/files", async (c) => {
     .order("id") // stable tiebreaker so pages never repeat or skip rows
     .range((page - 1) * limit, page * limit - 1);
 
+  // Same rule as the folder list: no folder_id means the top level. Only global=1 searches everywhere.
   if (c.req.query("global") !== "1") {
-    if (folderId === "root") query = query.is("folder_id", null);
-    else if (folderId) query = query.eq("folder_id", folderId);
+    if (!folderId || folderId === "root") query = query.is("folder_id", null);
+    else query = query.eq("folder_id", folderId);
   }
   if (search) query = query.ilike("file_name", `%${escapeLike(search)}%`);
   if (type && Object.hasOwn(TYPE_PREFIX, type)) query = query.ilike("mime_type", TYPE_PREFIX[type]);
@@ -75,8 +82,9 @@ fileRoutes.patch("/files/:id", async (c) => {
 
   if (body.file_name !== undefined) {
     if (typeof body.file_name !== "string") return fail(c, "Invalid file name");
-    const { data: current } = await db.from("files").select("file_name").eq("id", id).eq("status", "active")
-      .maybeSingle();
+    const { data: current, error: lookupError } = await db.from("files").select("file_name").eq("id", id)
+      .eq("status", "active").maybeSingle();
+    if (lookupError) throw new ServiceUnavailableError("Unable to look up the file");
     if (!current) return fail(c, "File not found", 404);
     // Only the name changes: the original extension is always kept.
     const name = renameKeepingExtension(current.file_name, body.file_name);
@@ -114,9 +122,15 @@ async function moveOrCopy(c: Ctx, copy: boolean, suppliedIds?: string[], supplie
     return fail(c, "Invalid destination folder");
   }
 
-  const { data: files, error } = await db.from("files").select(`id,${COPYABLE_FILE_COLUMNS}`).in("id", ids)
-    .eq("status", "active");
-  if (error || !files || files.length !== ids.length) return fail(c, "One or more files were not found", 404);
+  // Long id lists go to the database in groups, so the request URL never gets too long.
+  const files: Array<Record<string, unknown> & { id: string }> = [];
+  for (const part of chunk(ids, IN_CHUNK)) {
+    const { data, error } = await db.from("files").select(`id,${COPYABLE_FILE_COLUMNS}`).in("id", part)
+      .eq("status", "active");
+    if (error) return fail(c, "Unable to load the files", 500);
+    files.push(...(data ?? []) as unknown as Array<Record<string, unknown> & { id: string }>);
+  }
+  if (files.length !== ids.length) return fail(c, "One or more files were not found", 404);
 
   if (copy) {
     const rows = files.map(({ id, ...rest }) => ({
@@ -130,11 +144,11 @@ async function moveOrCopy(c: Ctx, copy: boolean, suppliedIds?: string[], supplie
     await logAction("file_copy", undefined, { count: ids.length, folder_id: folderId });
     return c.json({ ok: true, ids: data?.map((row) => row.id) ?? [] }, 201);
   }
-  const { error: updateError } = await db.from("files").update({ folder_id: folderId, updated_at: now() }).in(
-    "id",
-    ids,
-  ).eq("status", "active");
-  if (updateError) return fail(c, "Unable to move files", 500);
+  for (const part of chunk(ids, IN_CHUNK)) {
+    const { error: updateError } = await db.from("files").update({ folder_id: folderId, updated_at: now() })
+      .in("id", part).eq("status", "active");
+    if (updateError) return fail(c, "Unable to move files", 500);
+  }
   await logAction("file_move", undefined, { count: ids.length, folder_id: folderId });
   return c.json({ ok: true });
 }
@@ -150,13 +164,19 @@ fileRoutes.post("/files/:id/copy", async (c) => {
 
 // ------------------------------------------------------------- trash
 
-function setTrashed(ids: string[], trashed: boolean) {
+/** Moves files to Trash (or back), in groups of IN_CHUNK ids. Returns the files that were changed. */
+async function setTrashed(ids: string[], trashed: boolean) {
   const patch = trashed
     ? { status: "trashed", deleted_at: now(), updated_at: now() }
     : { status: "active", deleted_at: null, updated_at: now() };
-  return db.from("files").update(patch).in("id", ids).eq("status", trashed ? "active" : "trashed").select(
-    "id,file_name",
-  );
+  const changed: Array<{ id: string; file_name: string }> = [];
+  for (const part of chunk(ids, IN_CHUNK)) {
+    const { data, error } = await db.from("files").update(patch).in("id", part)
+      .eq("status", trashed ? "active" : "trashed").select("id,file_name");
+    if (error) return { data: changed, error };
+    changed.push(...(data ?? []));
+  }
+  return { data: changed, error: null };
 }
 
 fileRoutes.delete("/files/:id", async (c) => {
@@ -297,9 +317,10 @@ fileRoutes.delete("/trash/folders/:id", async (c) => {
     if (error.code === "P0002") return fail(c, "Folder not found in Trash", 404);
     return fail(c, "Unable to permanently delete folder", 500);
   }
-  // Only Telegram messages that no remaining file (for example a copy elsewhere) still points at are removed.
+  // The channel messages no remaining file points at were queued by the database in the same step; they are
+  // deleted in the background (Telegram allows about 20 per minute), so this request answers right away.
   const rows = (data ?? []) as Array<ChannelMessage & { orphaned: boolean }>;
-  await deleteChannelMessages(rows.filter((row) => row.orphaned));
+  kickPendingDeletions();
   await logAction("folder_permanent_delete", undefined, { name: entry.name, files: rows.length });
   return c.json({ ok: true, deleted_files: rows.length });
 });
@@ -314,21 +335,25 @@ fileRoutes.delete("/files/:id/permanent", async (c) => {
   if (file.trash_entry_id) {
     return fail(c, "This file is inside a deleted folder. Delete that folder from Trash instead.", 409);
   }
-  const { data, error } = await db.rpc("purge_file", { p_id: id });
+  const { error } = await db.rpc("purge_file", { p_id: id });
   if (error) return fail(c, "Unable to permanently delete file", 500);
-  const rows = (data ?? []) as Array<ChannelMessage & { orphaned: boolean }>;
-  await deleteChannelMessages(rows.filter((row) => row.orphaned));
+  kickPendingDeletions();
   await logAction("permanent_delete", undefined, { file_name: file.file_name });
   return c.json({ ok: true });
 });
 
 fileRoutes.post("/trash/empty", async (c) => {
   try {
+    // Deleted folders are removed too: count them so the answer matches what was emptied.
+    const { count: folderItems } = await db.from("trashed_folders").select("id", {
+      count: "exact",
+      head: true,
+    });
     const { purged } = await purgeTrash(null);
-    await logAction("trash_empty", undefined, { count: purged });
-    return c.json({ ok: true, count: purged });
+    await logAction("trash_empty", undefined, { count: purged, folders: folderItems ?? 0 });
+    return c.json({ ok: true, count: purged, folders: folderItems ?? 0 });
   } catch (error) {
-    console.error("Empty trash failed", error);
+    logError("Empty trash failed", error);
     return fail(c, "Unable to empty trash", 500);
   }
 });
@@ -387,15 +412,22 @@ fileRoutes.get("/files/:id/preview", async (c) => {
     return fail(c, "Image preview is limited to files under 2 MB", 413);
   }
 
-  const info = await fetch(
-    `https://api.telegram.org/bot${config.botToken}/getFile?file_id=${
-      encodeURIComponent(file.telegram_file_id)
-    }`,
-  );
-  if (!info.ok) return fail(c, "Unable to prepare image preview", 502);
-  const filePath = (await info.json())?.result?.file_path;
-  if (typeof filePath !== "string") return fail(c, "Image preview is unavailable", 404);
-  const image = await fetch(`https://api.telegram.org/file/bot${config.botToken}/${filePath}`);
+  // These URLs contain the bot token, and a network error carries the URL: catch here and log it redacted.
+  let image: Response;
+  try {
+    const info = await fetch(
+      `https://api.telegram.org/bot${config.botToken}/getFile?file_id=${
+        encodeURIComponent(file.telegram_file_id)
+      }`,
+    );
+    if (!info.ok) return fail(c, "Unable to prepare image preview", 502);
+    const filePath = (await info.json())?.result?.file_path;
+    if (typeof filePath !== "string") return fail(c, "Image preview is unavailable", 404);
+    image = await fetch(`https://api.telegram.org/file/bot${config.botToken}/${filePath}`);
+  } catch (error) {
+    logError("Image preview: Telegram request failed", error);
+    return fail(c, "Unable to load image preview", 502);
+  }
   if (!image.ok || !image.body) return fail(c, "Unable to load image preview", 502);
 
   const headers: Record<string, string> = {

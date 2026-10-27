@@ -15,9 +15,11 @@ import {
 import {
   burnPasswordCheck,
   createSession,
-  FRESH_TELEGRAM_MS,
   hashPassword,
+  isRecentSignIn,
   passwordProblem,
+  RECENT_SIGNIN_MS,
+  type SessionClaims,
   type SessionMethod,
   verifyMiniAppInitData,
   verifyPasswordCompat,
@@ -92,8 +94,19 @@ async function bumpSessionVersion(): Promise<number> {
   return data;
 }
 
-async function issueSession(c: import("hono").Context, via: SessionMethod, version?: number) {
-  const token = await createSession(config.ownerId, version ?? await currentSessionVersion(), via);
+async function issueSession(
+  c: import("hono").Context,
+  via: SessionMethod,
+  version?: number,
+  authenticatedAt?: number,
+) {
+  const token = await createSession(
+    config.ownerId,
+    version ?? await currentSessionVersion(),
+    via,
+    undefined,
+    authenticatedAt,
+  );
   setSessionCookie(c, token);
   return token;
 }
@@ -138,7 +151,8 @@ export const originGuard: MiddlewareHandler = async (c, next) => {
   await next();
 };
 
-export const requireAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
+/** The session token of a request: the Authorization header, or else the session cookie. */
+function tokenOf(c: import("hono").Context): string | undefined {
   const bearer = c.req.header("Authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
   const rawCookie = c.req.header("Cookie")?.match(/(?:^|;\s*)drive_session=([^;]+)/)?.[1];
   let cookie: string | undefined;
@@ -147,11 +161,32 @@ export const requireAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
   } catch {
     cookie = undefined;
   }
-  const token = bearer ?? cookie;
+  return bearer ?? cookie;
+}
+
+/**
+ * True when the session is still accepted by the database: not signed out, and issued under the current session
+ * version. One round trip for sessions that carry an id; older tokens only check the version.
+ */
+async function sessionAccepted(claims: SessionClaims): Promise<boolean> {
+  if (!claims.jti) return claims.v === await currentSessionVersion();
+  const { data, error } = await db.rpc("check_session", { p_telegram_id: config.ownerId, p_jti: claims.jti });
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | { o_version?: number; o_revoked?: boolean }
+    | undefined;
+  if (error || !row || typeof row.o_version !== "number") {
+    console.error("Unable to check the session", error?.message ?? "unexpected answer");
+    throw new SessionStoreUnavailableError();
+  }
+  return !row.o_revoked && claims.v === row.o_version;
+}
+
+export const requireAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
+  const token = tokenOf(c);
   const claims = token ? await verifySession(token) : null;
   if (!claims) return fail(c, "Unauthorized", 401);
   try {
-    if (claims.v !== await currentSessionVersion()) return fail(c, "Unauthorized", 401);
+    if (!await sessionAccepted(claims)) return fail(c, "Unauthorized", 401);
   } catch (error) {
     if (!(error instanceof SessionStoreUnavailableError)) throw error;
     c.header("Retry-After", "5");
@@ -186,7 +221,8 @@ publicAuth.post("/telegram", async (c) => {
     { onConflict: "telegram_id" },
   );
   if (error) console.error("Unable to update Telegram user profile", error.message);
-  const token = await issueSession(c, "telegram");
+  // The session remembers when Telegram launched the Mini App, so old launch data never counts as a recent sign-in.
+  const token = await issueSession(c, "telegram", undefined, user.auth_date * 1000);
   return c.json({ ok: true, token });
 });
 
@@ -250,9 +286,22 @@ publicAuth.post("/password/login", async (c) => {
   return c.json({ ok: true, token });
 });
 
-publicAuth.post("/logout", (c) => {
+publicAuth.post("/logout", async (c) => {
+  // Signs out THIS session for good: the token is revoked on the server, not just forgotten by the browser.
+  let revoked = false;
+  const token = tokenOf(c);
+  const claims = token ? await verifySession(token) : null;
+  if (claims?.jti) {
+    const { error } = await db.rpc("revoke_session", {
+      p_jti: claims.jti,
+      p_expires: new Date(claims.exp).toISOString(),
+    });
+    revoked = !error;
+    if (error) console.error("Unable to revoke the session", error.message);
+  }
   clearSessionCookie(c);
-  return c.json({ ok: true });
+  // revoked=false means the server could not record it (or the token had no id): "Sign out everywhere" is the sure way.
+  return c.json({ ok: true, revoked });
 });
 
 // ---- routes that need a session ------------------------------------------------
@@ -262,13 +311,15 @@ export const privateAuth = new Hono<AppEnv>();
 privateAuth.get("/me", async (c) => {
   const claims = c.get("session");
   const row = await ownerRow();
-  const fresh = claims.via === "telegram" && Date.now() - claims.iat < FRESH_TELEGRAM_MS;
+  const recent = isRecentSignIn(claims);
   return c.json({
     authenticated: true,
     via: claims.via,
     password_enabled: Boolean(row?.password_enabled),
     username: row?.login_username ?? null,
-    can_change_without_current_password: fresh,
+    can_change_without_current_password: recent,
+    recent_sign_in: recent,
+    recent_sign_in_until: claims.via === "telegram" ? (claims.at ?? claims.iat) + RECENT_SIGNIN_MS : null,
     session_expires_at: new Date(claims.exp).toISOString(),
   });
 });
@@ -297,9 +348,22 @@ async function saveCredentials(c: Ctx, username: string, password: string) {
   }
   const version = data;
   // Every older session is revoked; the current device gets a fresh one.
-  const token = await issueSession(c, c.get("session").via, version);
+  // Every older session is revoked; this device keeps its sign-in time (changing credentials does not make it "recent").
+  const claims = c.get("session");
+  const token = await issueSession(c, claims.via, version, claims.at ?? claims.iat);
   return { token };
 }
+
+privateAuth.post("/unlock-signin", async (c) => {
+  // Anyone can lock password sign-in by guessing wrongly. Whoever just opened the app from Telegram can unlock it.
+  if (!isRecentSignIn(c.get("session"))) {
+    return fail(c, "For your security, open Cloud Drive again from Telegram, then try again.", 403);
+  }
+  const { count, error } = await db.from("login_attempts").delete({ count: "exact" }).neq("key", "");
+  if (error) return fail(c, "Unable to reset the sign-in limits", 500);
+  await logAction("signin_unlock", undefined, { counters: count ?? 0 });
+  return c.json({ ok: true, cleared: count ?? 0 });
+});
 
 privateAuth.post("/password/setup", async (c) => {
   const body = await jsonBody<{ username?: unknown; password?: unknown }>(c);
@@ -310,6 +374,14 @@ privateAuth.post("/password/setup", async (c) => {
   if (problem) return fail(c, problem);
   if ((await ownerRow())?.password_enabled) {
     return fail(c, "Browser sign-in is already enabled. Use Change credentials instead.", 409);
+  }
+  // Creating credentials is what turns a Telegram session into permanent access, so it needs a recent launch.
+  if (!isRecentSignIn(c.get("session"))) {
+    return fail(
+      c,
+      "For your security, open Cloud Drive again from Telegram, then turn on browser sign-in.",
+      403,
+    );
   }
   const result = await saveCredentials(c, body.username.toLowerCase(), body.password as string);
   if (result instanceof Response) return result;
@@ -331,8 +403,10 @@ privateAuth.patch("/password", async (c) => {
   }
 
   const claims = c.get("session");
-  const freshTelegram = claims.via === "telegram" && Date.now() - claims.iat < FRESH_TELEGRAM_MS;
-  if (!freshTelegram) {
+  if (!isRecentSignIn(claims)) {
+    if (typeof body.current_password !== "string" || body.current_password === "") {
+      return fail(c, "Enter your current password to continue.", 403);
+    }
     const limitKey = "pwchange";
     const blocked = await throttleBlock(
       c,

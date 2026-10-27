@@ -3,7 +3,7 @@ import denoConfig from "../../deno.json" with { type: "json" };
 import { allowedOrigins, config } from "../config.ts";
 import { db, filesByIds, folderExists, logAction } from "../db.ts";
 import { type AppEnv, fail, jsonBody } from "../http.ts";
-import { isUuid } from "../lib.ts";
+import { isUuid, recentWebhookError } from "../lib.ts";
 import { bot } from "../telegram.ts";
 
 export const systemRoutes = new Hono<AppEnv>();
@@ -131,6 +131,7 @@ systemRoutes.get("/status", async (c) => {
   const expectedWebhook = webhook.ok ? webhook.value : null;
   const callbacksAllowed = !expectedWebhook?.allowed_updates ||
     expectedWebhook.allowed_updates.includes("callback_query");
+  const webhookError = expectedWebhook ? recentWebhookError(expectedWebhook) : { message: null, at: null };
 
   return c.json({
     checked_at: new Date().toISOString(),
@@ -148,11 +149,12 @@ systemRoutes.get("/status", async (c) => {
       : { ok: false, latency_ms: telegram.ms, error: telegram.error },
     webhook: webhook.ok
       ? {
-        ok: Boolean(webhook.value.url) && callbacksAllowed && !webhook.value.last_error_message,
+        ok: Boolean(webhook.value.url) && callbacksAllowed && !webhookError.message,
         url_set: Boolean(webhook.value.url),
         pending_updates: webhook.value.pending_update_count,
         callbacks_allowed: callbacksAllowed,
-        last_error: webhook.value.last_error_message ?? null,
+        last_error: webhookError.message,
+        last_error_at: webhookError.at,
       }
       : { ok: false, error: webhook.error },
     channel: channel.ok
