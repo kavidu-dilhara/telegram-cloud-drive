@@ -81,12 +81,14 @@ function cancelRequest(request: Request) {
 export function DialogProvider({ children }: { children: ReactNode }) {
   const [request, setRequest] = useState<Request | null>(null);
   const current = useRef<Request | null>(null);
+  const [sequence, setSequence] = useState(0);
 
   const api = useMemo<DialogApi>(() => {
     // Opening a dialog while another is open cancels the first one, so its caller is never left waiting forever.
     const open = (next: Request) => {
       const previous = current.current;
       current.current = next;
+      setSequence((count) => count + 1); // a new dialog never inherits what was typed into the previous one
       setRequest(next);
       if (previous) cancelRequest(previous);
     };
@@ -107,7 +109,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     <DialogContext.Provider value={api}>
       {children}
       {request?.kind === "confirm" && <ConfirmDialog request={request} close={close} />}
-      {request?.kind === "prompt" && <PromptDialog request={request} close={close} />}
+      {request?.kind === "prompt" && <PromptDialog key={sequence} request={request} close={close} />}
       {request?.kind === "folder" && <FolderDialog request={request} close={close} />}
       {request?.kind === "link" && <LinkDialog request={request} close={close} />}
     </DialogContext.Provider>
@@ -165,7 +167,7 @@ function PromptDialog(
     if (value.trim()) finish(value.trim());
   };
   return (
-    <Modal title={options.title} onClose={() => finish(null)}>
+    <Modal title={options.title} onClose={() => finish(null)} closeOnBackdrop={false}>
       <form onSubmit={submit} className="stack">
         <label className="field">
           <span>{options.label}</span>

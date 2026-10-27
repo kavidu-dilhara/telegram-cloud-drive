@@ -10,10 +10,12 @@ interface ModalProps {
   children: ReactNode;
   footer?: ReactNode;
   wide?: boolean;
+  /** Clicking outside closes the dialog (default). Turn off where typed text would be lost. */
+  closeOnBackdrop?: boolean;
 }
 
 /** Accessible dialog: labelled, focus is trapped and restored, Escape and backdrop click close it. */
-export function Modal({ title, onClose, children, footer, wide }: ModalProps) {
+export function Modal({ title, onClose, children, footer, wide, closeOnBackdrop = true }: ModalProps) {
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
@@ -56,7 +58,7 @@ export function Modal({ title, onClose, children, footer, wide }: ModalProps) {
   return (
     <div
       className="modal-backdrop"
-      onMouseDown={(event) => event.target === event.currentTarget && onClose()}
+      onMouseDown={(event) => closeOnBackdrop && event.target === event.currentTarget && onClose()}
     >
       <div
         className={wide ? "modal modal-wide" : "modal"}
