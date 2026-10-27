@@ -62,6 +62,22 @@ create table if not exists files (
   updated_at timestamptz not null default now(),
   deleted_at timestamptz
 );
+-- Storage-channel messages waiting to be deleted. purge_file queues a message in the same transaction that removes the
+-- last file pointing at it, so it can never be forgotten (even if the server stops half-way); the backend deletes the
+-- queued messages in the background and the maintenance job retries failures, giving up after a number of tries.
+create table if not exists pending_message_deletions (
+  chat_id bigint not null,
+  message_id bigint not null,
+  attempts integer not null default 1,
+  last_error text,
+  created_at timestamptz not null default now(),
+  primary key (chat_id, message_id)
+);
+-- A failed try is retried later (next_try_at); a message queued by a purge is due immediately.
+alter table pending_message_deletions add column if not exists next_try_at timestamptz not null default now();
+create index if not exists pending_message_deletions_created_idx on pending_message_deletions (created_at);
+create index if not exists pending_message_deletions_due_idx on pending_message_deletions (next_try_at);
+
 -- Deleted folders waiting in Trash. A deleted folder is removed from "folders" and kept here as one snapshot of its
 -- whole tree (ids, names, structure), so restoring it rebuilds everything exactly. Its files stay in "files" as
 -- trashed rows tagged with trash_entry_id.
@@ -150,6 +166,10 @@ alter table shares add column if not exists share_token_enc text;
 alter table files add column if not exists trashed_folder_id uuid;
 alter table files add column if not exists trash_entry_id uuid references trashed_folders (id) on delete set null;
 create index if not exists files_trash_entry_idx on files (trash_entry_id) where trash_entry_id is not null;
+-- Every file has a MIME type: the "Documents" filter (everything that is not an image, video or audio) relies on it.
+update files set mime_type = 'application/octet-stream' where mime_type is null;
+alter table files alter column mime_type set default 'application/octet-stream';
+alter table files alter column mime_type set not null;
 
 alter table users enable row level security;
 alter table folders enable row level security;
@@ -160,6 +180,7 @@ alter table activity_logs enable row level security;
 alter table settings enable row level security;
 alter table login_attempts enable row level security;
 alter table trashed_folders enable row level security;
+alter table pending_message_deletions enable row level security;
 
 -- --------------------------------------------------------------- functions
 -- Multi-step operations run inside one transaction so a failure never leaves half-finished data.
@@ -205,6 +226,30 @@ language sql security definer set search_path = public as $$
     password_enabled = true,
     session_version = users.session_version + 1
   returning session_version;
+$$;
+
+-- Sessions that were signed out on purpose (until they would have expired anyway).
+create table if not exists revoked_sessions (
+  jti text primary key,
+  expires_at timestamptz not null
+);
+create index if not exists revoked_sessions_expires_idx on revoked_sessions (expires_at);
+alter table revoked_sessions enable row level security;
+
+-- Signs ONE session out (the one with this id).
+create or replace function revoke_session(p_jti text, p_expires timestamptz)
+returns void
+language sql security definer set search_path = public as $$
+  insert into revoked_sessions (jti, expires_at) values (p_jti, p_expires) on conflict (jti) do nothing;
+$$;
+
+-- Everything needed to accept a session in ONE round trip: the owner's current session version and whether this
+-- particular session was signed out.
+create or replace function check_session(p_telegram_id bigint, p_jti text)
+returns table (o_version integer, o_revoked boolean)
+language sql stable security definer set search_path = public as $$
+  select coalesce((select session_version from users where telegram_id = p_telegram_id), 1),
+         exists (select 1 from revoked_sessions where jti = p_jti);
 $$;
 
 -- Counts one sign-in attempt against every key in ONE atomic step, BEFORE the slow password check, so a burst of
@@ -508,6 +553,12 @@ begin
   orphaned := not exists (
     select 1 from files where telegram_chat_id = v_file.telegram_chat_id and telegram_message_id = v_file.telegram_message_id
   );
+  if orphaned then
+    -- Queue the channel message in this same transaction: removing the file and remembering the message are one step.
+    insert into pending_message_deletions (chat_id, message_id)
+      values (v_file.telegram_chat_id, v_file.telegram_message_id)
+      on conflict (chat_id, message_id) do nothing;
+  end if;
   return next;
 end;
 $$;
@@ -549,6 +600,8 @@ $$;
 
 -- Only the backend (service role) may call these functions; the public API keys may not.
 revoke execute on function cloud_drive_dashboard() from public, anon, authenticated;
+revoke execute on function revoke_session(text, timestamptz) from public, anon, authenticated;
+revoke execute on function check_session(bigint, text) from public, anon, authenticated;
 revoke execute on function bump_session_version(bigint) from public, anon, authenticated;
 revoke execute on function set_owner_credentials(bigint, text, text, text, integer) from public, anon, authenticated;
 revoke execute on function reserve_login_attempt(text[], integer[], integer) from public, anon, authenticated;
@@ -562,6 +615,8 @@ revoke execute on function purge_trashed_folder(uuid) from public, anon, authent
 revoke execute on function purge_file(uuid) from public, anon, authenticated;
 revoke execute on function purge_trashed_files(timestamptz) from public, anon, authenticated;
 grant execute on function cloud_drive_dashboard() to service_role;
+grant execute on function revoke_session(text, timestamptz) to service_role;
+grant execute on function check_session(bigint, text) to service_role;
 grant execute on function bump_session_version(bigint) to service_role;
 grant execute on function set_owner_credentials(bigint, text, text, text, integer) to service_role;
 grant execute on function reserve_login_attempt(text[], integer[], integer) to service_role;
