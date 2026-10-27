@@ -16,12 +16,21 @@ const env = (key: string) => {
 
 const token = env("BOT_TOKEN");
 const call = async (method: string, body?: Record<string, unknown>) => {
-  const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body ?? {}),
-  });
-  return await response.json();
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body ?? {}),
+    });
+    return await response.json();
+  } catch (error) {
+    // The error text contains the request URL, which contains the bot token: never print it.
+    console.error(
+      `Could not reach Telegram (${method}):`,
+      String(error).split(token).join("<token>").replace(/bot\d+:[\w-]+/g, "bot<token>"),
+    );
+    Deno.exit(1);
+  }
 };
 
 if (Deno.args.includes("--info")) {
