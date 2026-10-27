@@ -34,6 +34,9 @@ export const config = {
   supabaseUrl: required("SUPABASE_URL"),
   supabaseKey: required("SUPABASE_SERVICE_ROLE_KEY"),
   sessionSecret: required("SESSION_SECRET"),
+  /** Key for stored share links. A separate SHARE_SECRET lets SESSION_SECRET be rotated without breaking them. */
+  shareSecret: optional("SHARE_SECRET") ?? required("SESSION_SECRET"),
+  shareSecretIsSeparate: optional("SHARE_SECRET") !== undefined,
   botUsername: optional("BOT_USERNAME")?.replace(/^@/, ""),
   devOrigin: origin(optional("DEV_ORIGIN")),
   trashRetentionDays: positiveInt("TRASH_RETENTION_DAYS", 30),
@@ -47,6 +50,9 @@ if (!Number.isSafeInteger(config.ownerId) || !Number.isSafeInteger(config.channe
   throw new Error("BOT_OWNER_ID and STORAGE_CHANNEL_ID must be integer Telegram IDs");
 }
 if (config.sessionSecret.length < 32) throw new Error("SESSION_SECRET must be at least 32 characters");
+if (config.shareSecretIsSeparate && config.shareSecret.length < 32) {
+  throw new Error("SHARE_SECRET must be at least 32 characters when it is set");
+}
 if (config.webhookSecret.length < 32 || !/^[A-Za-z0-9_-]+$/.test(config.webhookSecret)) {
   throw new Error("TELEGRAM_WEBHOOK_SECRET must be 32+ characters using only A-Z, a-z, 0-9, _ and -");
 }

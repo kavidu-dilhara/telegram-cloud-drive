@@ -1,9 +1,11 @@
-import { answerFailure, editQuietly } from "./botErrors.ts";
+import { logError } from "./redact.ts";
+import { answerFailure, editQuietly, ownerGuard } from "./botErrors.ts";
+import { deliverShare } from "./share.ts";
 import { AlbumReports } from "./album.ts";
 import { type Context, InlineKeyboard } from "grammy";
 import { config } from "./config.ts";
 import { allFolders, db, filesByIds, type FolderRow, logAction } from "./db.ts";
-import { folderPath, formatSize, isUuid, sha256Hex, singleLine } from "./lib.ts";
+import { folderPath, formatSize, isUuid, lastPage, singleLine } from "./lib.ts";
 import { extractMedia, storeIncoming } from "./storage.ts";
 import { bot, shareUrl } from "./telegram.ts";
 import { decryptToken } from "./security.ts";
@@ -13,22 +15,18 @@ const PAGE_SIZE = 8;
 // ------------------------------------------------------------------ guards
 
 /** Only the owner can use the bot; anyone may open a share link (/start share_...). */
-bot.use(async (ctx, next) => {
-  const isShare = /^\/start(@\w+)?\s+share_/i.test(ctx.message?.text ?? "");
-  if (ctx.from?.id !== config.ownerId && !isShare) return;
-  await next();
-});
+bot.use(ownerGuard(config.ownerId));
 
 const appButton = (label = "Open Cloud Drive") => new InlineKeyboard().webApp(label, config.miniAppUrl);
 const firstName = (ctx: Context) => singleLine(ctx.from?.first_name || ctx.from?.username || "there", 40);
-const pageNumber = (value: unknown) => Math.max(1, Math.min(1000, Number(value) || 1));
+const pageNumber = (value: unknown) => Math.max(1, Math.min(1000, Math.floor(Number(value)) || 1));
 
 /** Runs a command and turns any failure into a friendly message instead of silence. */
 async function guarded(ctx: Context, failure: string, action: () => Promise<void>) {
   try {
     await action();
   } catch (error) {
-    console.error(failure, error);
+    logError(failure, error);
     await answerFailure(ctx);
     await ctx.reply(
       `⚠️ ${failure}\n\nPlease try again in a moment. If it keeps happening, open Cloud Drive → Settings to check the live status.`,
@@ -42,20 +40,6 @@ const show = (ctx: Context, text: string, reply_markup: InlineKeyboard, edit: bo
 
 // ------------------------------------------------------------- share links
 
-async function deliverShare(ctx: Context, token: string) {
-  const { data: share } = await db.from("shares").select("file_id").eq("token_hash", await sha256Hex(token))
-    .maybeSingle();
-  if (!share) {
-    return void await ctx.reply("🔗 This share link is no longer valid. Ask the sender for a new one.");
-  }
-  const { data: file } = await db.from("files").select("telegram_chat_id,telegram_message_id,file_name").eq(
-    "id",
-    share.file_id,
-  ).eq("status", "active").maybeSingle();
-  if (!file) return void await ctx.reply("📭 The shared file is no longer available.");
-  await ctx.api.copyMessage(ctx.chat!.id, Number(file.telegram_chat_id), Number(file.telegram_message_id));
-}
-
 // ------------------------------------------------------------- list views
 
 async function filesView(page: number) {
@@ -68,6 +52,9 @@ async function filesView(page: number) {
     allFolders(),
   ]);
   if (error) throw error;
+  // A page past the end shows the last page instead of an empty one.
+  const last = lastPage(count ?? 0, PAGE_SIZE);
+  if (page > last) return filesView(last);
   if (!data?.length && page === 1) {
     return {
       text:
@@ -94,6 +81,8 @@ async function trashView(page: number) {
   }).eq("status", "trashed").is("trash_entry_id", null).order("deleted_at", { ascending: false }).order("id")
     .range(from, from + PAGE_SIZE - 1);
   if (error) throw error;
+  const last = lastPage(count ?? 0, PAGE_SIZE);
+  if (page > last) return trashView(last);
   // Deleted folders are single items in Trash (their files are inside them); shown on the first page.
   let folderLines: string[] = [];
   if (page === 1) {
@@ -484,7 +473,7 @@ bot.on("message", async (ctx) => {
       await (album ? album.record("empty") : finish("📎 That message has no file I can save."));
     }
   } catch (error) {
-    console.error("Unable to store incoming file", error);
+    logError("Unable to store incoming file", error);
     await (album ? album.record("failed") : finish(
       "⚠️ I couldn't save this file. Nothing was lost - please send it again in a moment.",
       new InlineKeyboard(),
@@ -503,8 +492,8 @@ void bot.api.setMyCommands([
   { command: "shared", description: "Manage share links" },
   { command: "settings", description: "Open settings" },
   { command: "help", description: "Show help" },
-]).catch((error) => console.error("Unable to register bot commands", error));
+]).catch((error) => logError("Unable to register bot commands", error));
 
-bot.catch((error) => console.error("Bot error", error.error));
+bot.catch((error) => logError("Bot error", error.error));
 
 export { bot };

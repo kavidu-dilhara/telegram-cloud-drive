@@ -6,7 +6,8 @@ const enc = new TextEncoder();
 /** PBKDF2-HMAC-SHA256 work factor for new hashes (OWASP guidance). */
 export const PBKDF2_ITERATIONS = 600_000;
 export const SESSION_LIFETIME_MS = 12 * 3600_000;
-export const FRESH_TELEGRAM_MS = 3600_000;
+/** How recently the owner must have opened the Mini App for changes that create or replace credentials. */
+export const RECENT_SIGNIN_MS = 10 * 60_000;
 /** Telegram keeps the launch data of a Mini App that stays open or minimised, so allow a full day. */
 export const INIT_DATA_MAX_AGE_SECONDS = 24 * 3600;
 
@@ -22,6 +23,8 @@ export interface TelegramUser {
   id: number;
   username?: string;
   first_name?: string;
+  /** When the Mini App was launched (Telegram's auth_date), in seconds since epoch. */
+  auth_date: number;
 }
 
 /** Validates Telegram Mini App initData and returns the owner. Throws on any problem. */
@@ -57,7 +60,7 @@ export async function verifyMiniAppInitData(
     throw new Error("Invalid Telegram user payload");
   }
   if (!Number.isSafeInteger(user.id) || user.id !== ownerId) throw new Error("Not authorized");
-  return { id: user.id as number, username: user.username, first_name: user.first_name };
+  return { id: user.id as number, username: user.username, first_name: user.first_name, auth_date: authDate };
 }
 
 // ---------------------------------------------------------------- sessions
@@ -73,6 +76,21 @@ export interface SessionClaims {
   /** Session version; bumping it in the database revokes every older session. */
   v: number;
   via: SessionMethod;
+  /**
+   * When the owner last proved they were present, ms since epoch. For a Telegram session this is the Mini App's
+   * launch time (auth_date), NOT when the session was created: replaying day-old launch data must not look recent.
+   * Missing in tokens issued by older versions (then `iat` is used).
+   */
+  at?: number;
+  /** Unique id of this session, so signing out can revoke just this one. Missing in tokens from older versions. */
+  jti?: string;
+}
+
+/** True when the owner opened the Mini App from Telegram within RECENT_SIGNIN_MS. */
+export function isRecentSignIn(claims: SessionClaims, now = Date.now()): boolean {
+  if (claims.via !== "telegram") return false;
+  const at = claims.at ?? claims.iat;
+  return at <= now + 60_000 && now - at < RECENT_SIGNIN_MS;
 }
 
 export async function createSession(
@@ -80,9 +98,19 @@ export async function createSession(
   version: number,
   via: SessionMethod,
   secret = config.sessionSecret,
+  authenticatedAt?: number,
 ) {
   const now = Date.now();
-  const claims: SessionClaims = { sub: userId, exp: now + SESSION_LIFETIME_MS, iat: now, v: version, via };
+  const jti = toHex(crypto.getRandomValues(new Uint8Array(16)));
+  const claims: SessionClaims = {
+    sub: userId,
+    exp: now + SESSION_LIFETIME_MS,
+    iat: now,
+    v: version,
+    via,
+    jti,
+  };
+  if (authenticatedAt !== undefined) claims.at = Math.min(authenticatedAt, now);
   const payload = base64UrlEncode(enc.encode(JSON.stringify(claims)));
   return `${payload}.${toHex(await hmac(secret, payload))}`;
 }
@@ -103,6 +131,8 @@ export async function verifySession(
     const claims = JSON.parse(new TextDecoder().decode(base64UrlDecode(payload))) as SessionClaims;
     const valid = claims.sub === ownerId && Number.isFinite(claims.exp) && claims.exp > Date.now() &&
       Number.isInteger(claims.v) && Number.isFinite(claims.iat) &&
+      (claims.at === undefined || Number.isFinite(claims.at)) &&
+      (claims.jti === undefined || (typeof claims.jti === "string" && /^[a-f0-9]{32}$/.test(claims.jti))) &&
       (claims.via === "telegram" || claims.via === "password");
     return valid ? claims : null;
   } catch {
@@ -191,7 +221,7 @@ async function shareKey(secret: string) {
 }
 
 /** AES-GCM encrypts a share token so a database leak does not reveal working links. */
-export async function encryptToken(plain: string, secret = config.sessionSecret) {
+export async function encryptToken(plain: string, secret = config.shareSecret) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const cipher = new Uint8Array(
     await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await shareKey(secret), enc.encode(plain)),
@@ -199,22 +229,28 @@ export async function encryptToken(plain: string, secret = config.sessionSecret)
   return `${base64UrlEncode(iv)}.${base64UrlEncode(cipher)}`;
 }
 
+/** Keys tried when reading a stored link: the current one first, then SESSION_SECRET (links made before SHARE_SECRET existed). */
+const defaultShareKeys = () => [...new Set([config.shareSecret, config.sessionSecret])];
+
 export async function decryptToken(
   value: string | null | undefined,
-  secret = config.sessionSecret,
+  secrets: string | string[] = defaultShareKeys(),
 ): Promise<string | null> {
   if (!value) return null;
-  try {
-    const [iv, cipher] = value.split(".");
-    const plain = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: base64UrlDecode(iv) },
-      await shareKey(secret),
-      base64UrlDecode(cipher),
-    );
-    return new TextDecoder().decode(plain);
-  } catch {
-    return null;
+  const [iv, cipher] = value.split(".");
+  for (const secret of Array.isArray(secrets) ? secrets : [secrets]) {
+    try {
+      const plain = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: base64UrlDecode(iv) },
+        await shareKey(secret),
+        base64UrlDecode(cipher),
+      );
+      return new TextDecoder().decode(plain);
+    } catch {
+      // wrong key (or damaged value): try the next one
+    }
   }
+  return null;
 }
 
 /** URL-safe random token that fits Telegram's 64-character /start payload limit with the "share_" prefix. */

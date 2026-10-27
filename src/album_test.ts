@@ -1,3 +1,4 @@
+import "./test_env.ts";
 import assert from "node:assert/strict";
 import { AlbumReports, albumSummary } from "./album.ts";
 
@@ -34,7 +35,9 @@ Deno.test("AlbumReports: one status message for the whole album, final text show
     edits.at(-1),
     "⚠️ Album: 2 saved, 1 failed.\nSend the failed files again - nothing else was lost.",
   );
-  assert.equal(edits.length, 3); // edits run one after another, never overlapping
+  // edits run one after another, and one that would repeat the text on screen is skipped
+  assert.ok(edits.length >= 1 && edits.length <= 3);
+  assert.equal(new Set(edits).size, edits.length);
 });
 
 Deno.test("AlbumReports: the first file's success is not reported as the whole album", async () => {

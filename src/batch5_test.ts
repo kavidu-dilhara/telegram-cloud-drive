@@ -437,6 +437,7 @@ Deno.test("sign out everywhere / credential changes: one atomic database call, a
         sub: 42,
         via: "telegram",
         iat: Date.now() - 600_000,
+        at: Date.now() - 60_000, // the Mini App was opened a minute ago
         exp: Date.now() + 3_600_000,
         v: 1,
       });

@@ -23,3 +23,25 @@ export async function editQuietly(edit: () => Promise<unknown>): Promise<void> {
     if (!isNotModified(error)) throw error;
   }
 }
+
+interface GuardContext {
+  from?: { id: number };
+  message?: { text?: string };
+  callbackQuery?: unknown;
+  answerCallbackQuery(other?: { text?: string }): Promise<unknown>;
+}
+
+/** Only the owner can use the bot; anyone may open a share link (/start share_...). */
+export function ownerGuard(ownerId: number) {
+  return async (ctx: GuardContext, next: () => Promise<void>) => {
+    const isShare = /^\/start(@\w+)?\s+share_/i.test(ctx.message?.text ?? "");
+    if (ctx.from?.id !== ownerId && !isShare) {
+      // Never leave a tapped button spinning, even for someone who is not allowed to use it.
+      if (ctx.callbackQuery) {
+        await ctx.answerCallbackQuery({ text: "This button is not for you." }).catch(() => undefined);
+      }
+      return;
+    }
+    await next();
+  };
+}

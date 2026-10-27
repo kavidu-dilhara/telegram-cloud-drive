@@ -1,3 +1,4 @@
+import { logError } from "./redact.ts";
 import type { Context, MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { ServiceUnavailableError } from "./errors.ts";
@@ -11,11 +12,11 @@ export type Ctx = Context<AppEnv>;
 /** Global error handler: unavailable dependencies answer 503 (retry shortly); anything else is a plain 500. */
 export function handleError(error: Error, c: Context) {
   if (error instanceof ServiceUnavailableError) {
-    console.error("Service unavailable", c.req.method, c.req.path, error.message);
+    logError("Service unavailable", c.req.method, c.req.path, error.message);
     c.header("Retry-After", "5");
     return fail(c, "The service is temporarily unavailable. Try again in a moment.", 503);
   }
-  console.error("Unhandled error", c.req.method, c.req.path, error);
+  logError("Unhandled error", c.req.method, c.req.path, error);
   return fail(c, "Something went wrong on the server", 500);
 }
 

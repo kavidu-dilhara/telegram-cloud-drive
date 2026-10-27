@@ -14,8 +14,29 @@ export function parseIds(input: unknown): string[] | null {
   return [...new Set(input as string[])];
 }
 
-/** Escapes LIKE wildcards so user text is matched literally. */
-export const escapeLike = (value: string) => value.replace(/[\\%_]/g, (character) => `\\${character}`);
+/**
+ * Escapes LIKE wildcards so user text is matched literally. PostgREST also treats "*" as "match anything" in
+ * like/ilike values and cannot escape it, so a typed "*" becomes the single-character wildcard "_" (it still
+ * matches a literal "*" but can no longer swallow arbitrary text).
+ */
+export const escapeLike = (value: string) =>
+  value.replace(/[\\%_]/g, (character) => `\\${character}`).replace(/\*/g, "_");
+
+/** How long a Telegram webhook delivery error keeps the status red. Telegram never clears the old message itself. */
+export const WEBHOOK_ERROR_WINDOW_MS = 3600_000;
+
+/** The webhook's last delivery error, but only while it is recent. Older errors are history, not a current problem. */
+export function recentWebhookError(
+  info: { last_error_message?: string; last_error_date?: number },
+  now = Date.now(),
+  windowMs = WEBHOOK_ERROR_WINDOW_MS,
+): { message: string | null; at: string | null } {
+  if (!info.last_error_message) return { message: null, at: null };
+  const at = info.last_error_date ? info.last_error_date * 1000 : null;
+  const at_iso = at === null ? null : new Date(at).toISOString();
+  if (at !== null && now - at >= windowMs) return { message: null, at: at_iso };
+  return { message: info.last_error_message, at: at_iso };
+}
 
 export const chunk = <T>(items: T[], size: number): T[][] => {
   const result: T[][] = [];
@@ -91,6 +112,9 @@ export function renameKeepingExtension(currentName: string, requestedName: strin
   return name.length > 255 ? null : name;
 }
 
+/** The last page of a list with `count` items, `size` per page (at least 1). */
+export const lastPage = (count: number, size: number) => Math.max(1, Math.ceil(count / size));
+
 /** A whole-number query parameter, clamped to min..max. Anything missing or not a number gives the fallback. */
 export function intParam(value: string | undefined, fallback: number, min: number, max: number): number {
   if (value === undefined || value.trim() === "") return fallback;
@@ -123,11 +147,14 @@ export const WEBHOOK_TIMEOUT_MS = 25_000;
 export const singleLine = (value: unknown, max = 120) =>
   typeof value === "string" ? value.replace(/[\r\n]+/g, " ").trim().slice(0, max) : "";
 
+/** Human-readable size. Values that round up to the next unit move to it ("1.00 MB", never "1024 KB"). */
 export const formatSize = (bytes: number) => {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1048576) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-  if (bytes < 1073741824) return `${(bytes / 1048576).toFixed(2)} MB`;
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  const kilobytes = Math.round(bytes / 1024);
+  if (kilobytes < 1024) return `${Math.max(1, kilobytes)} KB`;
+  const megabytes = bytes / 1048576;
+  if (Number(megabytes.toFixed(2)) < 1024) return `${megabytes.toFixed(2)} MB`;
   return `${(bytes / 1073741824).toFixed(2)} GB`;
 };
 

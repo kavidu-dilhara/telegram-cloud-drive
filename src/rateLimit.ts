@@ -1,3 +1,4 @@
+import { logError } from "./redact.ts";
 import type { Context } from "hono";
 import { getConnInfo } from "hono/deno";
 import { config } from "./config.ts";
@@ -49,7 +50,7 @@ export async function clearFailures(keys: string[]) {
     const { error } = await db.from("login_attempts").delete().in("key", keys);
     if (error) console.error("Unable to clear sign-in counters", error.message);
   } catch (error) {
-    console.error("Unable to clear sign-in counters", error);
+    logError("Unable to clear sign-in counters", error);
   }
 }
 
@@ -59,7 +60,7 @@ export async function refundAttempt(keys: string[]) {
     const { error } = await db.rpc("refund_login_attempt", { p_keys: keys });
     if (error) console.error("Unable to refund a sign-in attempt", error.message);
   } catch (error) {
-    console.error("Unable to refund a sign-in attempt", error);
+    logError("Unable to refund a sign-in attempt", error);
   }
 }
 

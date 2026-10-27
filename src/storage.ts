@@ -3,7 +3,7 @@ import type { Message } from "grammy/types";
 import { config } from "./config.ts";
 import { db, folderExists, getSetting, logAction } from "./db.ts";
 import { extensionOf } from "./lib.ts";
-import { bot } from "./telegram.ts";
+import { bot, deleteChannelMessages } from "./telegram.ts";
 
 const MIME_EXTENSIONS: Record<string, string> = {
   "image/jpeg": "jpg",
@@ -97,31 +97,42 @@ export async function storeIncoming(message: Message): Promise<StoreResult> {
       if (sameContent) return { status: "duplicate", inTrash: sameContent.status === "trashed" };
     }
 
+    // Decide where the file goes BEFORE anything is copied: a failed lookup then costs nothing.
+    const folderId = await incomingFolderId();
     const copied = await bot.api.copyMessage(config.channelId, message.chat.id, message.message_id, {
       caption: message.caption,
     });
-    const { data: inserted, error } = await db.from("files").insert({
-      folder_id: await incomingFolderId(),
-      file_name: item.filename,
-      file_size: item.size,
-      mime_type: item.mime,
-      extension: extensionOf(item.filename),
-      media_type: item.kind,
-      telegram_chat_id: config.channelId,
-      telegram_message_id: copied.message_id,
-      telegram_file_id: item.fileId,
-      telegram_file_unique_id: item.uniqueId,
-      media_group_id: message.media_group_id ?? null,
-      caption: message.caption ?? null,
-      status: "active",
-      ...source,
-    }).select("id").single();
-
-    if (error) {
-      // Never leave an unreferenced copy behind in the storage channel.
-      await bot.api.deleteMessage(config.channelId, copied.message_id).catch(() => undefined);
-      if (error.code === "23505") return { status: "duplicate", inTrash: false };
-      throw error;
+    // From here on, anything that goes wrong must not leave an unreferenced copy in the storage channel.
+    // (A copy that cannot be deleted right away is queued and retried.)
+    const discardCopy = () =>
+      deleteChannelMessages([{ tg_chat_id: config.channelId, tg_message_id: copied.message_id }]);
+    let inserted: { id: string } | null;
+    let error: { code?: string } | null;
+    try {
+      ({ data: inserted, error } = await db.from("files").insert({
+        folder_id: folderId,
+        file_name: item.filename,
+        file_size: item.size,
+        mime_type: item.mime,
+        extension: extensionOf(item.filename),
+        media_type: item.kind,
+        telegram_chat_id: config.channelId,
+        telegram_message_id: copied.message_id,
+        telegram_file_id: item.fileId,
+        telegram_file_unique_id: item.uniqueId,
+        media_group_id: message.media_group_id ?? null,
+        caption: message.caption ?? null,
+        status: "active",
+        ...source,
+      }).select("id").single());
+    } catch (thrown) {
+      await discardCopy();
+      throw thrown;
+    }
+    if (error || !inserted) {
+      await discardCopy();
+      if (error?.code === "23505") return { status: "duplicate", inTrash: false };
+      throw error ?? new Error("The file could not be saved");
     }
     await logAction("upload", inserted.id, { file_name: item.filename, size: item.size });
     return { status: "stored", filename: item.filename, size: item.size };

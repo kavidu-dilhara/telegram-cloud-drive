@@ -1,3 +1,5 @@
+import { logWarn } from "./redact.ts";
+
 /** What happened to one file of a Telegram album. */
 export type AlbumOutcome = "saved" | "duplicate" | "trashed" | "empty" | "failed";
 
@@ -26,6 +28,8 @@ interface AlbumRun {
   tally: AlbumTally;
   edits: Promise<void>;
   lastSeen: number;
+  /** The text the status message currently shows (an identical edit would only make Telegram complain). */
+  shown: string | null;
 }
 
 /**
@@ -49,12 +53,13 @@ export class AlbumReports {
     if (!run) {
       run = {
         status: open().catch((error) => {
-          console.warn("Unable to open the album status message", String(error));
+          logWarn("Unable to open the album status message", error);
           return null;
         }),
         tally: { saved: 0, duplicate: 0, trashed: 0, empty: 0, failed: 0 },
         edits: Promise.resolve(),
         lastSeen: now,
+        shown: null,
       };
       this.#runs.set(key, run);
     }
@@ -67,10 +72,13 @@ export class AlbumReports {
         current.edits = current.edits.then(async () => {
           const statusId = await current.status;
           if (statusId === null) return;
+          const text = albumSummary(current.tally);
+          if (text === current.shown) return;
           try {
-            await edit(statusId, albumSummary(current.tally));
+            await edit(statusId, text);
+            current.shown = text;
           } catch (error) {
-            console.warn("Unable to update the album status message", String(error));
+            logWarn("Unable to update the album status message", error);
           }
         });
         return current.edits;

@@ -474,35 +474,69 @@ Deno.test("restore file: goes back through the database (original folder), flags
   }
 });
 
-Deno.test("permanent delete of a Trash folder removes only orphaned Telegram messages", async () => {
+Deno.test("permanent delete of a Trash folder answers at once; queued channel messages are deleted in the background", async () => {
   const { bot } = await import("./telegram.ts");
   const realDelete = bot.api.deleteMessage;
   const deleted: number[] = [];
+  const removedFromQueue: unknown[] = [];
   try {
-    client.from = (table: string) =>
-      table === "trashed_folders"
-        ? { select: () => ({ eq: () => ({ maybeSingle: () => Promise.resolve({ data: { name: "k" } }) }) }) }
-        : { insert: () => Promise.resolve({ error: null }) };
+    // The database queued the orphaned message (11) in the same step as the purge; 12 is still used by a copy.
+    let queue = [{ chat_id: -100, message_id: 11, attempts: 1 }];
+    client.from = (table: string) => {
+      if (table === "trashed_folders") {
+        return {
+          select: () => ({ eq: () => ({ maybeSingle: () => Promise.resolve({ data: { name: "k" } }) }) }),
+        };
+      }
+      if (table === "pending_message_deletions") {
+        return {
+          select: () => ({
+            lte: () => ({ order: () => ({ limit: () => Promise.resolve({ data: queue, error: null }) }) }),
+          }),
+          delete: () => ({
+            match: (
+              key: unknown,
+            ) => (removedFromQueue.push(key), (queue = []), Promise.resolve({ error: null })),
+          }),
+        };
+      }
+      if (table === "files") {
+        // deno-lint-ignore no-explicit-any
+        const chain: any = {
+          select: () => chain,
+          eq: () => chain,
+          then: (resolve: (value: unknown) => unknown) =>
+            Promise.resolve({ count: 0, error: null }).then(resolve),
+        };
+        return chain;
+      }
+      return { insert: () => Promise.resolve({ error: null }) };
+    };
     client.rpc = (name: string, args: unknown) => {
       assert.equal(name, "purge_trashed_folder");
       assert.deepEqual(args, { p_entry: ENTRY });
       return Promise.resolve({
         data: [
           { tg_chat_id: -100, tg_message_id: 11, orphaned: true },
-          { tg_chat_id: -100, tg_message_id: 12, orphaned: false }, // a copy elsewhere still uses this one
+          { tg_chat_id: -100, tg_message_id: 12, orphaned: false },
         ],
         error: null,
       });
     };
+    // Telegram is slow (like its 20-per-minute limit): the request must not wait for it.
     // deno-lint-ignore no-explicit-any
-    (bot.api as any).deleteMessage = (_chat: number, message: number) => {
+    (bot.api as any).deleteMessage = async (_chat: number, message: number) => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
       deleted.push(message);
-      return Promise.resolve(true);
+      return true;
     };
     const response = await trashApp().request(`/trash/folders/${ENTRY}`, { method: "DELETE" });
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { ok: true, deleted_files: 2 });
-    assert.deepEqual(deleted, [11]); // 12 is still used by a copy elsewhere, so it stays in the channel
+    assert.deepEqual(deleted, [], "the answer came back before Telegram was asked");
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.deepEqual(deleted, [11]); // 12 is still used by a copy elsewhere, so it was never queued or deleted
+    assert.equal(removedFromQueue.length, 1);
 
     client.from = () => ({
       select: () => ({ eq: () => ({ maybeSingle: () => Promise.resolve({ data: null }) }) }),
