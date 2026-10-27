@@ -201,12 +201,25 @@ function Shell() {
   }, []);
 
   const signOut = useCallback(async (everywhere: boolean) => {
+    let serverConfirmed = true;
     try {
-      await api(everywhere ? "/api/auth/logout-all" : "/api/auth/logout", { method: "POST", quiet401: true });
-    } catch { /* the session may already be gone */ }
+      const result = await api<{ revoked?: boolean }>(
+        everywhere ? "/api/auth/logout-all" : "/api/auth/logout",
+        { method: "POST", quiet401: true },
+      );
+      serverConfirmed = result?.revoked !== false;
+    } catch {
+      serverConfirmed = false; // the session may already be gone, or the server could not be reached
+    }
     setToken(null);
     setSession(null);
-    setNotice(everywhere ? "You were signed out on every device." : "You were signed out.");
+    setNotice(
+      everywhere
+        ? "You were signed out on every device."
+        : serverConfirmed
+        ? "You were signed out."
+        : "You were signed out here, but the server could not confirm it. If this device is not yours, use Sign out everywhere.",
+    );
     setPhase("unauth");
   }, []);
 

@@ -64,6 +64,10 @@ export interface SessionInfo {
   password_enabled: boolean;
   username: string | null;
   can_change_without_current_password: boolean;
+  /** True when the Mini App was opened from Telegram within the last few minutes. */
+  recent_sign_in: boolean;
+  /** When the "recent Telegram launch" window ends (ms since epoch), or null for a browser sign-in. */
+  recent_sign_in_until: number | null;
   session_expires_at: string;
 }
 
@@ -107,6 +111,7 @@ export interface StatusReport {
     pending_updates?: number;
     callbacks_allowed?: boolean;
     last_error?: string | null;
+    last_error_at?: string | null;
     error?: string;
   };
   channel: { ok: boolean; title?: string | null; bot_role?: string; can_post?: boolean; error?: string };

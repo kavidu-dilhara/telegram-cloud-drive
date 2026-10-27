@@ -2,13 +2,7 @@ import type { FileRow, FolderRow } from "./types";
 
 export const cx = (...parts: Array<string | false | null | undefined>) => parts.filter(Boolean).join(" ");
 
-export function formatSize(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1048576) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-  if (bytes < 1073741824) return `${(bytes / 1048576).toFixed(2)} MB`;
-  return `${(bytes / 1073741824).toFixed(2)} GB`;
-}
+export { formatSize } from "./format";
 
 export const formatDate = (iso: string) =>
   new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
@@ -114,3 +108,10 @@ const ACTION_LABELS: Record<string, string> = {
 export function actionLabel(action: string): string {
   return ACTION_LABELS[action] ?? action.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
 }
+
+/** Splits a list into groups of at most `size` items. */
+export const chunk = <T,>(items: T[], size: number): T[][] => {
+  const groups: T[][] = [];
+  for (let index = 0; index < items.length; index += size) groups.push(items.slice(index, index + size));
+  return groups;
+};
