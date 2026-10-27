@@ -100,9 +100,10 @@ characters and they must not match.
    | `MINI_APP_URL`              | `https://placeholder.example` for now; you fix it in step 9 |
 
    The remaining lines in `.env.example` (`APP_URL`, `BOT_USERNAME`, `DEV_ORIGIN`, `TRASH_RETENTION_DAYS`,
-   `ACTIVITY_RETENTION_DAYS`, `PORT`, `TRUSTED_IP_HEADER`, `TRUSTED_PROXY_HOPS`) are optional. `APP_URL` is
-   only used by the webhook command in step 10. Leave `TRUSTED_IP_HEADER` empty unless you know your host
-   overwrites that header so visitors cannot forge it; the login is protected per account either way.
+   `ACTIVITY_RETENTION_DAYS`, `PORT`, `TRUSTED_IP_HEADER`, `TRUSTED_PROXY_HOPS`, `SHARE_SECRET`) are optional.
+   `APP_URL` is only used by the webhook command in step 10. Leave `TRUSTED_IP_HEADER` empty unless you know
+   your host overwrites that header so visitors cannot forge it; the login is protected per account either
+   way.
 
 4. Deploy and copy the backend address, for example `https://my-drive.deno.dev`. Save it as **APP_URL**.
 
@@ -188,8 +189,27 @@ sign-in pauses for 15 minutes; opening the app from Telegram always works.
 
 If GitHub reports a conflict, it is almost always `frontend/vercel.json`: keep your own backend host and
 accept the rest. If you ever change the backend address or `TELEGRAM_WEBHOOK_SECRET`, run step 10 again. If
-you change `SESSION_SECRET`, everyone is signed out and existing share links can no longer be displayed in the
-app (they still work for recipients).
+you change `SESSION_SECRET`, everyone is signed out. Stored share links are encrypted with `SESSION_SECRET`
+too, unless you set a separate `SHARE_SECRET` (32+ characters): set it once, before you ever rotate
+`SESSION_SECRET`, and links made earlier keep working and stay visible in the app. Without it, changing
+`SESSION_SECRET` makes existing links impossible to display (recipients can still open them, but sharing the
+file again replaces the link).
+
+Permanently deleting files (or emptying Trash) removes them from the database at once; the matching messages
+in your storage channel are queued and deleted in the background, about 20 per minute (Telegram's limit). A
+message that Telegram refuses to delete is retried every hour or so and given up on after 10 tries.
+
+"Sign out" ends only the current session, on the server too. "Sign out everywhere" ends every session. If you
+are locked out of password sign-in by wrong guesses, open Cloud Drive from Telegram and use "Reset sign-in
+lockout" in Settings.
+
+Sign-in limits: browser password sign-in allows 10 attempts per username, 10 per visitor address and 40 in
+total every 15 minutes. The total is shared on purpose, so someone who keeps guessing can block password
+sign-in for everyone for up to 15 minutes. Telegram sign-in is never affected, and a successful sign-in does
+not use up the shared limit.
+
+Turning on browser sign-in (or changing the credentials of a session that was not opened from Telegram a few
+minutes ago) needs a recent Telegram launch: close Cloud Drive and open it again from the bot first.
 
 Optional: GitHub disables workflows in forks by default. Open the **Actions** tab of your fork and enable them
 if you want the automatic checks.

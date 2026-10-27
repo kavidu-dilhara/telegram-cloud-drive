@@ -65,6 +65,45 @@
 - "Sign out everywhere" and credential changes are single atomic database steps and can no longer silently do
   nothing. Re-run `supabase/schema.sql`.
 - Image previews also renew an expired session. The unused `register_login_failure` function is removed.
+- **Sign out really signs out.** Every session now has its own id, and "Sign out" revokes that session on the
+  server (before, the token stayed valid for up to 12 hours). If the server cannot confirm it, the app says
+  so. Re-run `supabase/schema.sql`.
+- **The bot token can no longer leak into logs.** Network errors carry the request URL, which contains the
+  token; all error logging now removes the bot token and the other secrets, and the image preview catches its
+  own Telegram failures.
+- **Permanent deletes answer immediately.** The database queues the channel messages it orphans in the same
+  step that removes the files, so none can be forgotten, and they are deleted in the background (Telegram
+  allows about 20 per minute in a channel). Failures are retried with a growing delay. Emptying a big Trash no
+  longer times out or reports a failure after the data is already gone.
+- A failed lookup of the destination folder no longer leaves an orphaned copy in the storage channel: the
+  folder is chosen before anything is copied, and any later failure removes (or queues the removal of) the
+  copy.
+- Settings counts down the "recent Telegram sign-in" window itself and refreshes when you open it, so the
+  "Current password" field appears exactly when the server asks for it, and the message says what is needed.
+- New optional `SHARE_SECRET` encrypts stored share links, so `SESSION_SECRET` can be changed without breaking
+  them (links made earlier keep working).
+- "Reset sign-in lockout" in Settings (after a recent Telegram sign-in) clears the password sign-in limits.
+- Sizes just under a unit boundary show as "1.00 MB", never "1024 KB".
+- **Security:** old Telegram launch data no longer counts as a recent sign-in. A session remembers when
+  Telegram launched the Mini App, and turning on browser sign-in or changing credentials without the current
+  password needs a launch within the last 10 minutes (reopen the app from the bot first). Sign-in itself still
+  accepts launch data for 24 hours, so an open app keeps renewing its session.
+- "Select all" works for any number of files: the app sends long selections in groups of 100, and the server
+  talks to the database in groups too.
+- The type and extension filters search every folder, like text search, instead of showing only the current
+  folder with no way into subfolders.
+- The webhook status no longer stays red forever: only a delivery error from the last hour counts.
+- A database problem while opening a share link is reported as a problem to retry, not as "no longer valid".
+- Storage-channel messages that cannot be deleted are remembered and retried by the maintenance job (and given
+  up on after 10 tries) instead of staying in the channel forever. Re-run `supabase/schema.sql`.
+- A typed `*` in search no longer matches arbitrary text. `/files` and `/trash` in the bot show the last page
+  when the page number is too high. Cancelling or finishing a delete only clears the selection it concerns.
+- The file list without a `folder_id` means the top level (like the folder list); only `global=1` searches
+  everywhere. File renames report database errors as 503. Every file now has a MIME type (the Documents filter
+  relies on it). Empty Trash reports the deleted folders it removed too. Failed maintenance cleanup is logged.
+  Album status messages no longer send identical edits. Bot buttons tapped by a stranger are answered. Prompt
+  dialogs start empty and keep what you typed when you click outside. The move dialog leaves out the folder
+  the files are really in. Favorite stars refresh when the app comes back to the foreground.
 - A folder can no longer be copied into itself or one of its subfolders, and copying a folder is safe even if
   the folder hierarchy is ever damaged. Re-run `supabase/schema.sql` to update the database function.
 - Only one share link per file is enforced by the database. Re-running `supabase/schema.sql` removes older

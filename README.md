@@ -154,19 +154,20 @@ You need a Telegram account and free accounts on [Supabase](https://supabase.com
 
 ## Configuration
 
-| Variable                                          | Required                | Description                                                                       |
-| ------------------------------------------------- | ----------------------- | --------------------------------------------------------------------------------- |
-| `BOT_TOKEN`                                       | yes                     | Token from BotFather                                                              |
-| `BOT_OWNER_ID`                                    | yes                     | Your numeric Telegram user id                                                     |
-| `TELEGRAM_WEBHOOK_SECRET`                         | yes                     | 32+ characters: letters, digits, `_` or `-`                                       |
-| `STORAGE_CHANNEL_ID`                              | yes                     | Private channel id (`-100…`); the bot must be an admin that can post              |
-| `MINI_APP_URL`                                    | yes                     | HTTPS origin of the frontend, no trailing slash                                   |
-| `APP_URL`                                         | for `deno task webhook` | Public HTTPS URL of the backend                                                   |
-| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`       | yes                     | From Supabase → Project settings → API. The service key is backend-only           |
-| `SESSION_SECRET`                                  | yes                     | 32+ characters, different from the webhook secret. Changing it signs everyone out |
-| `BOT_USERNAME`                                    | no                      | Detected automatically                                                            |
-| `DEV_ORIGIN`                                      | no                      | Extra allowed origin for local development (`http://localhost:5173`)              |
-| `TRASH_RETENTION_DAYS`, `ACTIVITY_RETENTION_DAYS` | no                      | Automatic purge age in days, default 30                                           |
+| Variable                                          | Required                | Description                                                                           |
+| ------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------- |
+| `BOT_TOKEN`                                       | yes                     | Token from BotFather                                                                  |
+| `BOT_OWNER_ID`                                    | yes                     | Your numeric Telegram user id                                                         |
+| `TELEGRAM_WEBHOOK_SECRET`                         | yes                     | 32+ characters: letters, digits, `_` or `-`                                           |
+| `STORAGE_CHANNEL_ID`                              | yes                     | Private channel id (`-100…`); the bot must be an admin that can post                  |
+| `MINI_APP_URL`                                    | yes                     | HTTPS origin of the frontend, no trailing slash                                       |
+| `APP_URL`                                         | for `deno task webhook` | Public HTTPS URL of the backend                                                       |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`       | yes                     | From Supabase → Project settings → API. The service key is backend-only               |
+| `SESSION_SECRET`                                  | yes                     | 32+ characters, different from the webhook secret. Changing it signs everyone out     |
+| `SHARE_SECRET`                                    | no                      | 32+ characters. Encrypts stored share links so `SESSION_SECRET` can be changed freely |
+| `BOT_USERNAME`                                    | no                      | Detected automatically                                                                |
+| `DEV_ORIGIN`                                      | no                      | Extra allowed origin for local development (`http://localhost:5173`)                  |
+| `TRASH_RETENTION_DAYS`, `ACTIVITY_RETENTION_DAYS` | no                      | Automatic purge age in days, default 30                                               |
 
 ## Local development
 
@@ -214,8 +215,10 @@ cd frontend && npm run lint && npm run build
 - The service-role key bypasses row-level security. Keep it on the backend only.
 - Password sign-in is limited to 10 failures per account or address per 15 minutes. Telegram sign-in is never
   locked out.
-- Share links are unguessable 256-bit tokens, stored encrypted. Changing `SESSION_SECRET` makes existing links
-  impossible to display in the app (they still work for recipients); revoke and re-share them if needed.
+- Share links are unguessable 256-bit tokens, stored encrypted. Set `SHARE_SECRET` to keep them readable when
+  you change `SESSION_SECRET`; without it, changing `SESSION_SECRET` makes existing links impossible to
+  display in the app (they still work for recipients).
+- Logging out revokes that session on the server. Bot tokens and other secrets are removed from error logs.
 - Trash and activity are cleaned automatically (daily Deno Deploy cron, plus a lazy hourly check).
 
 ## Troubleshooting
