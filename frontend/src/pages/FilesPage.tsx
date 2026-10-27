@@ -28,7 +28,7 @@ import { useApp } from "../context";
 import { useDebounced } from "../hooks";
 import { pushBack } from "../telegram";
 import type { Dashboard, FavoriteRow, FileRow, FolderRow, Paged, Settings } from "../types";
-import { canPreview, cx, descendants, folderOptions, formatSize, splitName } from "../utils";
+import { canPreview, chunk, cx, descendants, folderOptions, formatSize, splitName } from "../utils";
 
 const SORTS: Record<Settings["default_sort"], [string, string]> = {
   newest: ["created_at", "desc"],
@@ -36,6 +36,11 @@ const SORTS: Record<Settings["default_sort"], [string, string]> = {
   name: ["name", "asc"],
   size: ["size", "desc"],
 };
+
+/** Sends a long list of file ids in several requests (the server accepts at most 200 ids at a time). */
+async function postInChunks(path: string, ids: string[], extra: Record<string, unknown> = {}) {
+  for (const part of chunk(ids, 100)) await api(path, { method: "POST", json: { file_ids: part, ...extra } });
+}
 
 export default function FilesPage() {
   const { settings, saveSettings, folders, reloadFolders } = useApp();
@@ -71,17 +76,16 @@ export default function FilesPage() {
   const filtering = Boolean(debouncedQuery || type || debouncedExtension);
   const params = useMemo(() => {
     const search = new URLSearchParams({ folder_id: folderId ?? "root", limit: "50" });
-    if (debouncedQuery) {
-      search.set("q", debouncedQuery);
-      search.set("global", "1");
-    }
+    if (debouncedQuery) search.set("q", debouncedQuery);
+    // Any search or filter looks through every folder (the folder list is hidden while one is active).
+    if (filtering) search.set("global", "1");
     if (type) search.set("type", type);
     if (debouncedExtension) search.set("extension", debouncedExtension);
     const [key, direction] = SORTS[sort];
     search.set("sort", key);
     search.set("direction", direction);
     return search.toString();
-  }, [folderId, debouncedQuery, type, debouncedExtension, sort]);
+  }, [folderId, debouncedQuery, type, debouncedExtension, sort, filtering]);
 
   // Load the first page whenever the view changes. A newer request always wins over an older one.
   useEffect(() => {
@@ -105,9 +109,17 @@ export default function FilesPage() {
   }, [params, reloadKey]);
 
   useEffect(() => {
-    api<FavoriteRow[]>("/api/favorites")
-      .then((rows) => setFavoriteIds(new Set(rows.map((row) => row.file_id))))
-      .catch(() => undefined);
+    const load = () =>
+      api<FavoriteRow[]>("/api/favorites")
+        .then((rows) => setFavoriteIds(new Set(rows.map((row) => row.file_id))))
+        .catch(() => undefined);
+    void load();
+    // Favorites can also change from the bot or another device: reload when the app comes back to the foreground.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void load();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
   }, []);
 
   // Telegram's Back button walks up the folder tree.
@@ -319,6 +331,13 @@ export default function FilesPage() {
     }
   }
 
+  /** The folder all of these files share (so the move dialog can leave it out), or null when they differ. */
+  function sharedFolder(ids: string[]): string | null {
+    const rows = items.filter((file) => ids.includes(file.id));
+    const first = rows[0]?.folder_id ?? null;
+    return rows.length === ids.length && rows.every((file) => file.folder_id === first) ? first : null;
+  }
+
   async function moveOrCopyFiles(ids: string[], copy: boolean, exclude?: string | null) {
     const choice = await dialogs.pickFolder({
       title: copy ? "Copy files" : "Move files",
@@ -329,10 +348,7 @@ export default function FilesPage() {
     if (!choice) return false;
     return attempt(
       () =>
-        api(`/api/files/batch/${copy ? "copy" : "move"}`, {
-          method: "POST",
-          json: { file_ids: ids, folder_id: choice.id },
-        }),
+        postInChunks(`/api/files/batch/${copy ? "copy" : "move"}`, ids, { folder_id: choice.id }),
       copy ? "Unable to copy files" : "Unable to move files",
       copy ? "Copied" : "Moved",
     );
@@ -352,7 +368,7 @@ export default function FilesPage() {
       if (!ok) return false;
     }
     const done = await attempt(
-      () => api("/api/files/batch/trash", { method: "POST", json: { file_ids: ids } }),
+      () => postInChunks("/api/files/batch/trash", ids),
       "Unable to move to Trash",
     );
     if (done) {
@@ -362,7 +378,7 @@ export default function FilesPage() {
           label: "Undo",
           run: () =>
             void attempt(
-              () => api("/api/files/batch/restore", { method: "POST", json: { file_ids: ids } }),
+              () => postInChunks("/api/files/batch/restore", ids),
               "Unable to undo",
               "Restored",
             ),
@@ -437,7 +453,8 @@ export default function FilesPage() {
       if (!ok) return;
     }
     if (selectedFiles.size) {
-      if (await moveOrCopyFiles([...selectedFiles], copy)) clearSelection();
+      const ids = [...selectedFiles];
+      if (await moveOrCopyFiles(ids, copy, copy ? null : sharedFolder(ids))) clearSelection();
     } else {
       await moveFolders(chosenFolders, copy);
     }
@@ -460,7 +477,7 @@ export default function FilesPage() {
     {
       label: "Move",
       icon: <Move size={16} aria-hidden="true" />,
-      onSelect: () => void moveOrCopyFiles([file.id], false, folderId),
+      onSelect: () => void moveOrCopyFiles([file.id], false, file.folder_id),
     },
     {
       label: "Move to Trash",
@@ -663,7 +680,7 @@ export default function FilesPage() {
                   void trashFiles(
                     [...selectedFiles],
                     `${selectedFiles.size} file${selectedFiles.size === 1 ? "" : "s"}`,
-                  ).then((done) => done && clearSelection())}
+                  ).then((done) => done && setSelectedFiles(new Set()))}
               >
                 <Trash2 size={15} aria-hidden="true" /> Trash {selectedFiles.size === 1 ? "file" : "files"}
               </button>
@@ -672,7 +689,7 @@ export default function FilesPage() {
               <button
                 type="button"
                 className="danger"
-                onClick={() => void deleteFolders(chosenFolders).then((done) => done && clearSelection())}
+                onClick={() => void deleteFolders(chosenFolders).then((done) => done && setSelectedFolders(new Set()))}
               >
                 <Trash2 size={15} aria-hidden="true" /> Delete{" "}
                 {selectedFolders.size === 1 ? "folder" : "folders"}

@@ -152,7 +152,20 @@ export default function TrashPage() {
       danger: true,
     });
     if (ok) {
-      await run(() => api("/api/trash/empty", { method: "POST" }), "Unable to empty Trash", "Trash emptied");
+      await run(
+        () => api<{ count: number; folders: number }>("/api/trash/empty", { method: "POST" }),
+        "Unable to empty Trash",
+        (result) => {
+          const files = result?.count ?? 0;
+          const folders = result?.folders ?? 0;
+          if (!files && !folders) return "Trash was already empty";
+          const parts = [
+            files ? `${files} file${files === 1 ? "" : "s"}` : "",
+            folders ? `${folders} folder${folders === 1 ? "" : "s"}` : "",
+          ].filter(Boolean);
+          return `Trash emptied (${parts.join(" and ")})`;
+        },
+      );
     }
   }
 

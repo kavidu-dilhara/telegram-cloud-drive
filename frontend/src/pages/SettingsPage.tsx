@@ -58,6 +58,14 @@ export default function SettingsPage() {
   const [password, setPassword] = useState("");
   const [current, setCurrent] = useState("");
   const [formError, setFormError] = useState("");
+  const [now, setNow] = useState(() => Date.now());
+
+  // Opening Settings refreshes the session details, and the clock keeps the "recent sign-in" window up to date.
+  useEffect(() => {
+    void reloadSession().catch(() => undefined);
+    const timer = setInterval(() => setNow(Date.now()), 15_000);
+    return () => clearInterval(timer);
+  }, [reloadSession]);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => pushBack(() => navigate("files")), [navigate]);
@@ -126,7 +134,19 @@ export default function SettingsPage() {
     if (ok) await signOut(true);
   }
 
-  const needsCurrent = session.password_enabled && !session.can_change_without_current_password;
+  // Whether the app was opened from Telegram a few minutes ago. Counted down on the screen (not fetched once at
+  // launch), so the "Current password" field appears exactly when the server starts asking for it.
+  const recent = session.recent_sign_in_until != null && now < session.recent_sign_in_until;
+  const needsCurrent = session.password_enabled && !recent;
+
+  async function unlockSignIn() {
+    try {
+      const result = await api<{ cleared: number }>("/api/auth/unlock-signin", { method: "POST" });
+      toast(result.cleared ? "Sign-in limits reset" : "No sign-in limits were active", { kind: "success" });
+    } catch (caught) {
+      toast(messageOf(caught, "Unable to reset the sign-in limits"), { kind: "error" });
+    }
+  }
 
   return (
     <>
@@ -212,6 +232,12 @@ export default function SettingsPage() {
           </p>
           <form onSubmit={(event) => void submitCredentials(event)} className="stack">
             <h3>{session.password_enabled ? "Change browser credentials" : "Enable browser sign-in"}</h3>
+            {!session.password_enabled && !recent && (
+              <div className="banner" role="note">
+                For your security, turning on browser sign-in needs a recent Telegram sign-in. Close Cloud Drive and open
+                it again from the bot, then come back here.
+              </div>
+            )}
             <label className="field">
               <span>Username</span>
               <input
@@ -267,6 +293,11 @@ export default function SettingsPage() {
             <button type="button" className="btn btn-danger" onClick={() => void leaveEverywhere()}>
               Sign out everywhere
             </button>
+            {session.password_enabled && recent && (
+              <button type="button" className="btn" onClick={() => void unlockSignIn()}>
+                Reset sign-in lockout
+              </button>
+            )}
           </div>
         </section>
 
