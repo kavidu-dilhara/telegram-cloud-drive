@@ -65,6 +65,10 @@
 - "Sign out everywhere" and credential changes are single atomic database steps and can no longer silently do
   nothing. Re-run `supabase/schema.sql`.
 - Image previews also renew an expired session. The unused `register_login_failure` function is removed.
+- A database problem while creating a share link or deleting a folder is now reported as "temporarily
+  unavailable" (503) instead of "File not found" / "Folder not found" (404), and a failed link lookup can no
+  longer lead to a second link being created. Creating or renaming a folder during a database problem answers
+  503 instead of 400; duplicate names (409) and genuinely invalid requests (400) are unchanged.
 - **Sign out really signs out.** Every session now has its own id, and "Sign out" revokes that session on the
   server (before, the token stayed valid for up to 12 hours). If the server cannot confirm it, the app says
   so. Re-run `supabase/schema.sql`.
