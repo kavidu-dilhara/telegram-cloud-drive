@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { db, filesByIds, logAction } from "../db.ts";
+import { ServiceUnavailableError } from "../errors.ts";
 import { type AppEnv, fail } from "../http.ts";
 import { isUuid, sha256Hex } from "../lib.ts";
 import { decryptToken, encryptToken, newShareToken } from "../security.ts";
@@ -36,16 +37,23 @@ shareRoutes.get("/shares", async (c) => {
 
 /** The file's existing link (oldest first) and its decrypted token, if any. */
 async function lookupShare(fileId: string) {
-  const { data } = await db.from("shares").select("id,share_token_enc,created_at").eq("file_id", fileId)
+  const { data, error } = await db.from("shares").select("id,share_token_enc,created_at").eq(
+    "file_id",
+    fileId,
+  )
     .order("created_at", { ascending: true }).limit(1).maybeSingle();
+  // A failed lookup must not look like "no link yet" (the route would then try to create a second one).
+  if (error) throw new ServiceUnavailableError("Unable to look up the share link");
   return { row: data, token: data ? await decryptToken(data.share_token_enc) : null };
 }
 
 shareRoutes.post("/files/:id/share", async (c) => {
   const id = c.req.param("id");
   if (!isUuid(id)) return fail(c, "Invalid file id");
-  const { data: file } = await db.from("files").select("id,file_name").eq("id", id).eq("status", "active")
-    .maybeSingle();
+  const { data: file, error: fileError } = await db.from("files").select("id,file_name").eq("id", id)
+    .eq("status", "active").maybeSingle();
+  // A database problem is a 503 (try again), never "File not found".
+  if (fileError) throw new ServiceUnavailableError("Unable to look up the file");
   if (!file) return fail(c, "File not found", 404);
 
   // One link per file: reuse the existing one instead of creating a pile of links.
@@ -58,7 +66,11 @@ shareRoutes.post("/files/:id/share", async (c) => {
       url: await shareUrl(existingToken),
     });
   }
-  if (existing) await db.from("shares").delete().eq("id", existing.id); // unreadable legacy link: replace it
+  if (existing) {
+    // unreadable legacy link: replace it (and stop if it cannot be removed, instead of failing later in a confusing way)
+    const { error: removeError } = await db.from("shares").delete().eq("id", existing.id);
+    if (removeError) throw new ServiceUnavailableError("Unable to replace the share link");
+  }
 
   const token = newShareToken();
   const { data, error } = await db.from("shares").insert({

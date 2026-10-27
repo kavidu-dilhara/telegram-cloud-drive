@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { allFolders, db, folderExists, logAction } from "../db.ts";
+import { ServiceUnavailableError } from "../errors.ts";
 import { type AppEnv, fail, jsonBody } from "../http.ts";
 import { descendants, isUuid } from "../lib.ts";
 
@@ -11,6 +12,12 @@ const cleanName = (
 ) => (typeof value === "string" ? value.trim().replace(/[\r\n\0/\\]/g, " ").replace(/\s+/g, " ") : "");
 const nameError = "Folder name must be 1-100 characters and cannot contain / or \\";
 const duplicateError = "A folder with this name already exists here";
+
+/**
+ * Database errors that mean "the request itself is wrong" (class 22 data exception, class 23 constraint violation:
+ * a name that is too long, a parent that does not exist, ...). Anything else is a problem on the server's side.
+ */
+const isRequestError = (code: string | undefined) => typeof code === "string" && /^2[23]/.test(code);
 
 folderRoutes.get("/folders", async (c) => {
   try {
@@ -41,11 +48,9 @@ folderRoutes.post("/folders", async (c) => {
     FOLDER_COLUMNS,
   ).single();
   if (error) {
-    return fail(
-      c,
-      error.code === "23505" ? duplicateError : "Unable to create folder",
-      error.code === "23505" ? 409 : 400,
-    );
+    if (error.code === "23505") return fail(c, duplicateError, 409);
+    if (isRequestError(error.code)) return fail(c, "Unable to create folder", 400);
+    throw new ServiceUnavailableError("Unable to create the folder"); // an outage is not the caller's mistake (400)
   }
   await logAction("folder_create", undefined, { folder_id: data.id, name });
   return c.json(data, 201);
@@ -79,11 +84,9 @@ folderRoutes.patch("/folders/:id", async (c) => {
   const { data, error } = await db.from("folders").update(update).eq("id", id).select(FOLDER_COLUMNS)
     .maybeSingle();
   if (error) {
-    return fail(
-      c,
-      error.code === "23505" ? duplicateError : "Unable to update folder",
-      error.code === "23505" ? 409 : 400,
-    );
+    if (error.code === "23505") return fail(c, duplicateError, 409);
+    if (isRequestError(error.code)) return fail(c, "Unable to update folder", 400);
+    throw new ServiceUnavailableError("Unable to update the folder");
   }
   if (!data) return fail(c, "Folder not found", 404);
   await logAction(update.name ? "folder_rename" : "folder_move", undefined, {
@@ -96,7 +99,10 @@ folderRoutes.patch("/folders/:id", async (c) => {
 folderRoutes.delete("/folders/:id", async (c) => {
   const id = c.req.param("id");
   if (!isUuid(id)) return fail(c, "Invalid folder id");
-  const { data: folder } = await db.from("folders").select("name").eq("id", id).maybeSingle();
+  const { data: folder, error: lookupError } = await db.from("folders").select("name").eq("id", id)
+    .maybeSingle();
+  // A database problem is a 503 (try again), never "Folder not found".
+  if (lookupError) throw new ServiceUnavailableError("Unable to look up the folder");
   if (!folder) return fail(c, "Folder not found", 404);
   // One transaction in Postgres: the folder and everything inside move to Trash as ONE item (the tree is saved so
   // a restore rebuilds it exactly), and the incoming-folder setting is reset if it pointed into the deleted tree.
