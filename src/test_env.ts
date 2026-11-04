@@ -7,3 +7,4 @@ Deno.env.set("MINI_APP_URL", "https://drive.example.test");
 Deno.env.set("SUPABASE_URL", "https://project.supabase.co");
 Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", "test-service-role-key");
 Deno.env.set("SESSION_SECRET", "a-secure-test-session-secret-with-32-bytes-or-more");
+Deno.env.set("BOT_USERNAME", "ci_bot");

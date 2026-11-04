@@ -1,11 +1,20 @@
 import { logError } from "./redact.ts";
-import { answerFailure, editQuietly, ownerGuard } from "./botErrors.ts";
+import { answerFailure, editQuietly, failureReply, ownerGuard } from "./botErrors.ts";
 import { deliverShare } from "./share.ts";
 import { AlbumReports } from "./album.ts";
+import { databaseAlbums } from "./albumDb.ts";
 import { type Context, InlineKeyboard } from "grammy";
 import { config } from "./config.ts";
 import { allFolders, db, filesByIds, type FolderRow, logAction } from "./db.ts";
-import { folderPath, formatSize, isUuid, lastPage, singleLine } from "./lib.ts";
+import {
+  folderPath,
+  formatSize,
+  isRangeError,
+  isUuid,
+  lastPage,
+  runWithSlowNotice,
+  singleLine,
+} from "./lib.ts";
 import { extractMedia, storeIncoming } from "./storage.ts";
 import { bot, shareUrl } from "./telegram.ts";
 import { decryptToken } from "./security.ts";
@@ -28,10 +37,10 @@ async function guarded(ctx: Context, failure: string, action: () => Promise<void
   } catch (error) {
     logError(failure, error);
     await answerFailure(ctx);
-    await ctx.reply(
-      `⚠️ ${failure}\n\nPlease try again in a moment. If it keeps happening, open Cloud Drive → Settings to check the live status.`,
-      { reply_markup: appButton() },
-    ).catch(() => undefined);
+    const reply = failureReply(failure, ctx.from?.id === config.ownerId);
+    await ctx.reply(reply.text, reply.withApp ? { reply_markup: appButton() } : undefined).catch(() =>
+      undefined
+    );
   }
 }
 
@@ -42,6 +51,25 @@ const show = (ctx: Context, text: string, reply_markup: InlineKeyboard, edit: bo
 
 // ------------------------------------------------------------- list views
 
+async function lastFilesPage() {
+  const { count, error } = await db.from("files").select("id", { count: "exact", head: true }).eq(
+    "status",
+    "active",
+  );
+  if (error) throw error;
+  return lastPage(count ?? 0, PAGE_SIZE);
+}
+
+async function lastTrashPage() {
+  const { count, error } = await db.from("files").select("id", { count: "exact", head: true }).eq(
+    "status",
+    "trashed",
+  )
+    .is("trash_entry_id", null);
+  if (error) throw error;
+  return lastPage(count ?? 0, PAGE_SIZE);
+}
+
 async function filesView(page: number) {
   const from = (page - 1) * PAGE_SIZE;
   const [{ data, error, count }, folders] = await Promise.all([
@@ -51,7 +79,14 @@ async function filesView(page: number) {
     ).order("created_at", { ascending: false }).order("id").range(from, from + PAGE_SIZE - 1),
     allFolders(),
   ]);
-  if (error) throw error;
+  if (error) {
+    // The database refuses an offset past the last row: show the last page instead.
+    if (page > 1 && isRangeError(error)) {
+      const last = await lastFilesPage();
+      if (last < page) return filesView(last);
+    }
+    throw error;
+  }
   // A page past the end shows the last page instead of an empty one.
   const last = lastPage(count ?? 0, PAGE_SIZE);
   if (page > last) return filesView(last);
@@ -80,7 +115,13 @@ async function trashView(page: number) {
     count: "exact",
   }).eq("status", "trashed").is("trash_entry_id", null).order("deleted_at", { ascending: false }).order("id")
     .range(from, from + PAGE_SIZE - 1);
-  if (error) throw error;
+  if (error) {
+    if (page > 1 && isRangeError(error)) {
+      const last = await lastTrashPage();
+      if (last < page) return trashView(last);
+    }
+    throw error;
+  }
   const last = lastPage(count ?? 0, PAGE_SIZE);
   if (page > last) return trashView(last);
   // Deleted folders are single items in Trash (their files are inside them); shown on the first page.
@@ -430,7 +471,10 @@ bot.command(
 
 // ------------------------------------------------------- incoming files
 
-const albums = new AlbumReports();
+/** A save still running after this long gets a "taking longer" notice, well before the webhook gives up at 25 s. */
+const SLOW_SAVE_NOTICE_MS = 15_000;
+
+const albums = new AlbumReports(120_000, Date.now, { shared: databaseAlbums });
 
 bot.on("message", async (ctx) => {
   const message = ctx.message;
@@ -448,7 +492,10 @@ bot.on("message", async (ctx) => {
     ? albums.join(
       `${message.chat.id}:${message.media_group_id}`,
       async () => (await ctx.reply("⏳ Album received. Saving all files…")).message_id,
-      (statusId, text) => ctx.api.editMessageText(ctx.chat.id, statusId, text, { reply_markup: appButton() }),
+      (statusId, text) =>
+        editQuietly(() =>
+          ctx.api.editMessageText(ctx.chat.id, statusId, text, { reply_markup: appButton() })
+        ),
     )
     : null;
   const status = album ? null : await ctx.reply("⏳ Saving your file…");
@@ -457,24 +504,33 @@ bot.on("message", async (ctx) => {
       ? ctx.api.editMessageText(ctx.chat.id, status.message_id, text, { reply_markup: keyboard })
       : Promise.resolve();
 
+  let slow = false;
   try {
-    const result = await storeIncoming(message);
+    // A save that is still running after a while is reported instead of leaving "Saving…" on screen; it carries
+    // on in the background and the message is updated again once it finishes.
+    const { value: result } = await runWithSlowNotice(storeIncoming(message), SLOW_SAVE_NOTICE_MS, () => {
+      slow = true;
+      return (album ? album.delayed() : finish(
+        "⏳ Still saving - this file is taking longer than usual.\n\nIf this message does not change within a minute, send the file again. Nothing will be duplicated.",
+        new InlineKeyboard(),
+      )).catch((error) => logError("Unable to show the slow-save notice", error));
+    });
     if (result.status === "stored") {
       await (album
-        ? album.record("saved")
+        ? album.record("saved", slow)
         : finish(`✅ Saved: ${singleLine(result.filename, 80)}\n${formatSize(result.size)}`));
     } else if (result.status === "duplicate") {
-      await (album ? album.record(result.inTrash ? "trashed" : "duplicate") : finish(
+      await (album ? album.record(result.inTrash ? "trashed" : "duplicate", slow) : finish(
         result.inTrash
           ? "♻️ This file is already in your Trash. Restore it, or the folder it was in, from the app."
           : "📌 This file is already in your Cloud Drive.",
       ));
     } else {
-      await (album ? album.record("empty") : finish("📎 That message has no file I can save."));
+      await (album ? album.record("empty", slow) : finish("📎 That message has no file I can save."));
     }
   } catch (error) {
     logError("Unable to store incoming file", error);
-    await (album ? album.record("failed") : finish(
+    await (album ? album.record("failed", slow) : finish(
       "⚠️ I couldn't save this file. Nothing was lost - please send it again in a moment.",
       new InlineKeyboard(),
     ));

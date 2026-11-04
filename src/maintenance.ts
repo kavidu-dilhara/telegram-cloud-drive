@@ -1,5 +1,6 @@
 import { logError } from "./redact.ts";
 import { config } from "./config.ts";
+import { albumTableMissing } from "./albumDb.ts";
 import { db } from "./db.ts";
 import { drainPendingDeletions, kickPendingDeletions } from "./telegram.ts";
 
@@ -55,6 +56,15 @@ export async function runMaintenance(): Promise<MaintenanceResult> {
   );
   if (revokedError) {
     console.error("Maintenance: unable to clean old signed-out sessions", revokedError.message);
+  }
+
+  // Album counters are only needed while an album is arriving; the table is optional, so a missing one is not an error.
+  const { error: albumsError } = await db.from("album_reports").delete().lt(
+    "created_at",
+    new Date(Date.now() - 86_400_000).toISOString(),
+  );
+  if (albumsError && !albumTableMissing(albumsError)) {
+    console.error("Maintenance: unable to clean old album counters", albumsError.message);
   }
 
   // Finish anything still queued (failed earlier, or left over from a stopped server); a short budget keeps this job brief.

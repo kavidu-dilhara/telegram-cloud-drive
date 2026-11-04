@@ -127,31 +127,46 @@ export async function retryPendingDeletions(
   return { deleted, gaveUp, processed: (data ?? []).length };
 }
 
-let draining = false;
+let activeDrain: Promise<{ deleted: number; gaveUp: number }> | null = null;
 
 /**
  * Works through the whole queue, one message after another (Telegram allows about 20 per minute in a channel, so a
- * big queue takes a while). Only one drain runs at a time. Safe to call as often as you like.
+ * big queue takes a while). Only one drain runs at a time. Concurrent callers wait for the active drain but receive
+ * an empty result, so the work is counted only once. Safe to call as often as you like.
  */
-export async function drainPendingDeletions(
+export function drainPendingDeletions(
   maxMs = 10 * 60_000,
 ): Promise<{ deleted: number; gaveUp: number }> {
-  if (draining) return { deleted: 0, gaveUp: 0 };
-  draining = true;
-  const started = Date.now();
-  let deleted = 0;
-  let gaveUp = 0;
-  try {
+  if (activeDrain) {
+    return activeDrain.then(() => ({ deleted: 0, gaveUp: 0 }));
+  }
+
+  const run = async (): Promise<{ deleted: number; gaveUp: number }> => {
+    const started = Date.now();
+    let deleted = 0;
+    let gaveUp = 0;
+
     while (Date.now() - started < maxMs) {
       const pass = await retryPendingDeletions(25);
       deleted += pass.deleted;
       gaveUp += pass.gaveUp;
       if (pass.processed === 0) break;
     }
-  } finally {
-    draining = false;
-  }
-  return { deleted, gaveUp };
+
+    return { deleted, gaveUp };
+  };
+
+  const current = run();
+  activeDrain = current;
+  void current.then(
+    () => {
+      if (activeDrain === current) activeDrain = null;
+    },
+    () => {
+      if (activeDrain === current) activeDrain = null;
+    },
+  );
+  return current;
 }
 
 /** Starts a drain in the background and returns immediately: a request never waits for Telegram. */

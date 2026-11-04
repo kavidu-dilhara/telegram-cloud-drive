@@ -115,6 +115,50 @@ export function renameKeepingExtension(currentName: string, requestedName: strin
 /** The last page of a list with `count` items, `size` per page (at least 1). */
 export const lastPage = (count: number, size: number) => Math.max(1, Math.ceil(count / size));
 
+/**
+ * Waits for `work`, but only up to `ms`. If it is still running then, the result says so and `late` carries on:
+ * it settles whenever the work does, so the caller can keep waiting for it. A failure before the time is up is thrown.
+ */
+export async function waitUpTo<T>(
+  work: Promise<T>,
+  ms: number,
+): Promise<{ done: true; value: T } | { done: false; late: Promise<T> }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<"late">((resolve) => {
+    timer = setTimeout(() => resolve("late"), ms);
+  });
+  try {
+    const first = await Promise.race([work.then((value) => ({ value })), timedOut]);
+    return first === "late" ? { done: false, late: work } : { done: true, value: first.value };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Waits for `work` to finish. If it is still running after `ms`, `onSlow` is called once (its failure is ignored) and
+ * the wait carries on, so a slow job is reported without being cut short. `slow` says whether the notice was sent.
+ */
+export async function runWithSlowNotice<T>(
+  work: Promise<T>,
+  ms: number,
+  onSlow: () => Promise<unknown>,
+): Promise<{ value: T; slow: boolean }> {
+  const waited = await waitUpTo(work, ms);
+  if (waited.done) return { value: waited.value, slow: false };
+  await onSlow().catch(() => undefined);
+  return { value: await waited.late, slow: true };
+}
+
+/**
+ * True when the database refused a page request because the offset is past the last row
+ * (PostgREST error PGRST103, "Requested range not satisfiable"). That is not an outage: the page simply is empty.
+ */
+export const isRangeError = (error: unknown): boolean => {
+  const { code, message } = (error ?? {}) as { code?: unknown; message?: unknown };
+  return code === "PGRST103" || (typeof message === "string" && /range not satisfiable/i.test(message));
+};
+
 /** A whole-number query parameter, clamped to min..max. Anything missing or not a number gives the fallback. */
 export function intParam(value: string | undefined, fallback: number, min: number, max: number): number {
   if (value === undefined || value.trim() === "") return fallback;

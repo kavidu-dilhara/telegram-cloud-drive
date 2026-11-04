@@ -15,6 +15,20 @@ export async function answerFailure(ctx: CallbackLike): Promise<void> {
   await ctx.answerCallbackQuery({ text: "Something went wrong. Please try again." }).catch(() => undefined);
 }
 
+/**
+ * The message sent when a bot action fails. Only the owner is pointed at the app and its Settings page;
+ * someone opening a share link just gets a plain "try again" and never sees the owner's app.
+ */
+export function failureReply(failure: string, isOwner: boolean): { text: string; withApp: boolean } {
+  return isOwner
+    ? {
+      text:
+        `⚠️ ${failure}\n\nPlease try again in a moment. If it keeps happening, open Cloud Drive → Settings to check the live status.`,
+      withApp: true,
+    }
+    : { text: `⚠️ ${failure}\n\nPlease try the link again in a moment.`, withApp: false };
+}
+
 /** Runs a message edit; an edit that changes nothing is not an error. */
 export async function editQuietly(edit: () => Promise<unknown>): Promise<void> {
   try {
