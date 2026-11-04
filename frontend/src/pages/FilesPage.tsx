@@ -27,7 +27,7 @@ import { useToast } from "../components/Toasts";
 import { useApp } from "../context";
 import { useDebounced } from "../hooks";
 import { pushBack } from "../telegram";
-import type { Dashboard, FavoriteRow, FileRow, FolderRow, Paged, Settings } from "../types";
+import type { Dashboard, FileRow, FolderRow, Paged, Settings } from "../types";
 import { canPreview, chunk, cx, descendants, folderOptions, formatSize, splitName } from "../utils";
 
 const SORTS: Record<Settings["default_sort"], [string, string]> = {
@@ -110,8 +110,8 @@ export default function FilesPage() {
 
   useEffect(() => {
     const load = () =>
-      api<FavoriteRow[]>("/api/favorites")
-        .then((rows) => setFavoriteIds(new Set(rows.map((row) => row.file_id))))
+      api<{ ids: string[] }>("/api/favorites/ids")
+        .then((result) => setFavoriteIds(new Set(result.ids)))
         .catch(() => undefined);
     void load();
     // Favorites can also change from the bot or another device: reload when the app comes back to the foreground.
@@ -209,6 +209,7 @@ export default function FilesPage() {
     const name = await dialogs.prompt({
       title: "New folder",
       label: "Folder name",
+      maxLength: 100,
       confirmLabel: "Create folder",
     });
     if (name) {
@@ -225,6 +226,7 @@ export default function FilesPage() {
       title: "Rename folder",
       label: "Folder name",
       initial: folder.name,
+      maxLength: 100,
       confirmLabel: "Rename",
     });
     if (name && name !== folder.name) {
@@ -650,8 +652,12 @@ export default function FilesPage() {
           </span>
         ))}
       </nav>
-      {debouncedQuery && (
-        <p className="scope-note" role="status">Showing results from all folders for “{debouncedQuery}”.</p>
+      {filtering && (
+        <p className="scope-note" role="status">
+          {debouncedQuery
+            ? `Showing results from all folders for “${debouncedQuery}”.`
+            : "Showing matching files from all folders."}
+        </p>
       )}
 
       {selectedFiles.size + selectedFolders.size > 0 && (
