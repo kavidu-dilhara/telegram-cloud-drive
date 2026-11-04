@@ -27,6 +27,8 @@ interface PromptOptions {
   suffix?: string;
   hint?: string;
   confirmLabel?: string;
+  /** Longest value the box accepts (default 255). */
+  maxLength?: number;
 }
 interface FolderPickOptions {
   title: string;
@@ -176,7 +178,7 @@ function PromptDialog(
               data-autofocus
               value={value}
               onChange={(event) => setValue(event.target.value)}
-              maxLength={255}
+              maxLength={options.maxLength ?? 255}
               required
             />
             {options.suffix && <span className="suffix" aria-hidden="true">{options.suffix}</span>}

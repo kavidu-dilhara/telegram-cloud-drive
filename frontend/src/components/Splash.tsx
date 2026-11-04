@@ -10,7 +10,7 @@ const STEPS = [
 const TIPS = [
   "Send or forward any file to your bot and it is saved here automatically.",
   "Star a file to keep it in Favorites for quick access.",
-  "Deleted something by mistake? Tap Undo, or restore it from Trash within 30 days.",
+  "Deleted something by mistake? Tap Undo, or restore it from Trash.",
   "Share a file with a private link and revoke it any time.",
   "Search looks through every folder at once.",
 ];
