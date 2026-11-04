@@ -103,6 +103,7 @@ const ACTION_LABELS: Record<string, string> = {
   sign_out_everywhere: "Signed out everywhere",
   password_setup: "Browser sign-in enabled",
   password_change: "Credentials changed",
+  signin_unlock: "Password sign-in unlocked",
 };
 
 export function actionLabel(action: string): string {
