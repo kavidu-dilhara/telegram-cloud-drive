@@ -630,4 +630,60 @@ grant execute on function purge_trashed_folder(uuid) to service_role;
 grant execute on function purge_file(uuid) to service_role;
 grant execute on function purge_trashed_files(timestamptz) to service_role;
 
+-- ---------------------------------------------------------------------------
+-- Albums: one shared status message and one shared tally per Telegram album, even when the files of an
+-- album reach different server instances. Optional: without it every instance counts its own files.
+-- ---------------------------------------------------------------------------
+create table if not exists album_reports (
+  key text primary key,
+  status_message_id bigint,
+  n_saved integer not null default 0,
+  n_duplicate integer not null default 0,
+  n_trashed integer not null default 0,
+  n_empty integer not null default 0,
+  n_failed integer not null default 0,
+  n_slow integer not null default 0,
+  created_at timestamptz not null default now()
+);
+create index if not exists album_reports_created_idx on album_reports (created_at);
+alter table album_reports enable row level security;
+
+-- True for the first caller only: that caller sends the album's status message.
+create or replace function claim_album(p_key text)
+returns boolean
+language plpgsql security definer set search_path = public as $$
+declare
+  v_rows integer;
+begin
+  insert into album_reports (key) values (p_key) on conflict (key) do nothing;
+  get diagnostics v_rows = row_count;
+  return v_rows = 1;
+end $$;
+
+-- Adds one file's outcome (or one "slow" file) and returns every counter.
+create or replace function record_album(p_key text, p_outcome text, p_was_slow boolean)
+returns table (n_saved integer, n_duplicate integer, n_trashed integer, n_empty integer, n_failed integer, n_slow integer)
+language plpgsql security definer set search_path = public as $$
+begin
+  if p_outcome not in ('saved', 'duplicate', 'trashed', 'empty', 'failed', 'slow') then
+    raise exception 'unknown album outcome %', p_outcome using errcode = '22023';
+  end if;
+  insert into album_reports (key) values (p_key) on conflict (key) do nothing;
+  return query
+  update album_reports a set
+    n_saved = a.n_saved + (p_outcome = 'saved')::int,
+    n_duplicate = a.n_duplicate + (p_outcome = 'duplicate')::int,
+    n_trashed = a.n_trashed + (p_outcome = 'trashed')::int,
+    n_empty = a.n_empty + (p_outcome = 'empty')::int,
+    n_failed = a.n_failed + (p_outcome = 'failed')::int,
+    n_slow = greatest(0, a.n_slow + case when p_outcome = 'slow' then 1 when p_was_slow then -1 else 0 end)
+  where a.key = p_key
+  returning a.n_saved, a.n_duplicate, a.n_trashed, a.n_empty, a.n_failed, a.n_slow;
+end $$;
+
+revoke execute on function claim_album(text) from public, anon, authenticated;
+revoke execute on function record_album(text, text, boolean) from public, anon, authenticated;
+grant execute on function claim_album(text) to service_role;
+grant execute on function record_album(text, text, boolean) to service_role;
+
 commit;
