@@ -16,6 +16,7 @@ import {
   contentDisposition,
   escapeLike,
   intParam,
+  isRangeError,
   isUuid,
   parseIds,
   previewImageType,
@@ -45,28 +46,34 @@ fileRoutes.get("/files", async (c) => {
   const sortKey = c.req.query("sort");
   const sort = sortKey === "name" ? "file_name" : sortKey === "size" ? "file_size" : "created_at";
   const ascending = c.req.query("direction") === "asc";
-  if (folderId !== undefined && folderId !== "root" && !isUuid(folderId)) return fail(c, "Invalid folder id");
 
-  let query = db.from("files").select(PUBLIC_FILE_COLUMNS, { count: "exact" })
-    .eq("status", "active")
+  const matching = () => {
+    let query = db.from("files").select(PUBLIC_FILE_COLUMNS, { count: "exact" }).eq("status", "active");
+    // Same rule as the folder list: no folder_id means the top level. Only global=1 searches everywhere.
+    if (c.req.query("global") !== "1") {
+      if (!folderId || folderId === "root") query = query.is("folder_id", null);
+      else query = query.eq("folder_id", folderId);
+    }
+    if (search) query = query.ilike("file_name", `%${escapeLike(search)}%`);
+    if (type && Object.hasOwn(TYPE_PREFIX, type)) query = query.ilike("mime_type", TYPE_PREFIX[type]);
+    if (type === "document") {
+      query = query.not("mime_type", "ilike", TYPE_PREFIX.image).not("mime_type", "ilike", TYPE_PREFIX.video)
+        .not("mime_type", "ilike", TYPE_PREFIX.audio);
+    }
+    if (extension) query = query.eq("extension", extension);
+    return query;
+  };
+
+  const { data, error, count } = await matching()
     .order(sort, { ascending })
     .order("id") // stable tiebreaker so pages never repeat or skip rows
     .range((page - 1) * limit, page * limit - 1);
-
-  // Same rule as the folder list: no folder_id means the top level. Only global=1 searches everywhere.
-  if (c.req.query("global") !== "1") {
-    if (!folderId || folderId === "root") query = query.is("folder_id", null);
-    else query = query.eq("folder_id", folderId);
+  if (error && page > 1 && isRangeError(error)) {
+    // A page past the last row (for example after files were removed) is simply empty, not a failure.
+    const probe = await matching().range(0, 0);
+    if (probe.error) return fail(c, "Unable to load files", 500);
+    return c.json({ items: [], page, limit, total: probe.count ?? 0, has_more: false });
   }
-  if (search) query = query.ilike("file_name", `%${escapeLike(search)}%`);
-  if (type && Object.hasOwn(TYPE_PREFIX, type)) query = query.ilike("mime_type", TYPE_PREFIX[type]);
-  if (type === "document") {
-    query = query.not("mime_type", "ilike", TYPE_PREFIX.image).not("mime_type", "ilike", TYPE_PREFIX.video)
-      .not("mime_type", "ilike", TYPE_PREFIX.audio);
-  }
-  if (extension) query = query.eq("extension", extension);
-
-  const { data, error, count } = await query;
   if (error) return fail(c, "Unable to load files", 500);
   return c.json({ items: data ?? [], page, limit, total: count ?? 0, has_more: page * limit < (count ?? 0) });
 });
@@ -105,7 +112,9 @@ fileRoutes.patch("/files/:id", async (c) => {
   ).maybeSingle();
   if (error) return fail(c, "Unable to update file", 500);
   if (!data) return fail(c, "File not found", 404);
-  await logAction(update.file_name ? "file_rename" : "file_move", id, { file_name: data.file_name });
+  // A request can change both: record each change so the activity log stays complete.
+  if (update.file_name) await logAction("file_rename", id, { file_name: data.file_name });
+  if (update.folder_id !== undefined) await logAction("file_move", id, { file_name: data.file_name });
   return c.json(data);
 });
 
@@ -247,11 +256,21 @@ fileRoutes.get("/trash", async (c) => {
       fileOffset + filesOnPage - 1,
     )
     : await filesQuery;
-  if (fileResult.error) return fail(c, "Unable to load trash", 500);
-  const fileTotal = fileResult.count ?? 0;
+  let fileTotal = fileResult.count ?? 0;
+  let fileItems = filesOnPage > 0 ? fileResult.data ?? [] : [];
+  if (fileResult.error && filesOnPage > 0 && isRangeError(fileResult.error)) {
+    // A page past the last file (for example after files were removed) is simply empty, not a failure.
+    const probe = await db.from("files").select("id", { count: "exact", head: true }).eq("status", "trashed")
+      .is("trash_entry_id", null);
+    if (probe.error) return fail(c, "Unable to load trash", 500);
+    fileTotal = probe.count ?? 0;
+    fileItems = [];
+  } else if (fileResult.error) {
+    return fail(c, "Unable to load trash", 500);
+  }
 
   return c.json({
-    items: filesOnPage > 0 ? fileResult.data ?? [] : [],
+    items: fileItems,
     folders,
     folder_total: folderTotal,
     page,
@@ -373,6 +392,22 @@ fileRoutes.get("/favorites", async (c) => {
       item,
     ) => item.file),
   );
+});
+
+/** Every starred file id (not just the newest 500), so the file list can show the right stars. */
+fileRoutes.get("/favorites/ids", async (c) => {
+  const PAGE = 1000;
+  const ids: string[] = [];
+  for (let from = 0;; from += PAGE) {
+    const { data, error } = await db.from("favorites").select("file_id").order("file_id").range(
+      from,
+      from + PAGE - 1,
+    );
+    if (error) return fail(c, "Unable to load favorites", 500);
+    ids.push(...(data ?? []).map((row) => row.file_id));
+    if ((data?.length ?? 0) < PAGE) break;
+  }
+  return c.json({ ids });
 });
 
 fileRoutes.post("/files/:id/favorite", async (c) => {
