@@ -168,6 +168,8 @@ You need a Telegram account and free accounts on [Supabase](https://supabase.com
 | `BOT_USERNAME`                                    | no                      | Detected automatically                                                                |
 | `DEV_ORIGIN`                                      | no                      | Extra allowed origin for local development (`http://localhost:5173`)                  |
 | `TRASH_RETENTION_DAYS`, `ACTIVITY_RETENTION_DAYS` | no                      | Automatic purge age in days, default 30                                               |
+| `PORT`                                            | no                      | Local server port, default 8000 (ignored on Deno Deploy)                              |
+| `TRUSTED_IP_HEADER`, `TRUSTED_PROXY_HOPS`         | no                      | Real visitor address header for login throttling; set only if your host overwrites it |
 
 ## Local development
 
@@ -195,13 +197,13 @@ cd frontend && npm run lint && npm run build
 │   ├── routes/             HTTP API: auth, files, folders, shares, system
 │   ├── bot.ts              Bot commands and inline buttons
 │   ├── storage.ts          Saving incoming files to the channel
+│   ├── album.ts            One status message per album, shared across servers (albumDb.ts)
 │   ├── security.ts         Sessions, passwords, Telegram verification, encryption
 │   └── maintenance.ts      Automatic purge of Trash and activity
 ├── frontend/               Mini App (React + Vite)
 │   └── src/                pages/, components/, api.ts, telegram.ts
 ├── supabase/
-│   ├── schema.sql          Database setup (safe to run more than once)
-│   └── upgrade_existing.sql  Update a database created by an older release
+│   └── schema.sql          Database setup (safe to run more than once)
 ├── scripts/set_webhook.ts  Registers the Telegram webhook
 ├── .github/                CI workflow and issue forms
 ├── DEPLOYMENT.md           Step-by-step deployment guide
@@ -233,6 +235,17 @@ cd frontend && npm run lint && npm run build
 | Share link shows "unavailable"                              | Revoke it in _Shared_ and share the file again.                                                              |
 
 More in [DEPLOYMENT.md](DEPLOYMENT.md#if-something-goes-wrong).
+
+### Known limits
+
+- **Albums on several server instances.** Files of one album can reach different instances of a serverless
+  host. 
+- **Very slow saves.** After 15 seconds a save still in progress changes its message to "⏳ Still saving -
+  this file is taking longer than usual" and finishes with ✅ when it completes. The webhook itself answers
+  after 25 seconds. If the host stops the instance in between, that notice stays; send the file again, nothing
+  is duplicated.
+- **Password sign-in lock.** Forty wrong attempts in 15 minutes pause password sign-in for everyone. Open the
+  app from Telegram and use _Settings → Reset sign-in lockout_ to lift it at once.
 
 ## Contributing
 

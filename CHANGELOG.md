@@ -21,6 +21,25 @@
 
 **Fixes**
 
+- Asking the bot (`/files 9`, `/trash 9`, or an old "Next" button) for a page past the end now shows the last
+  page. The Files and Trash lists in the app answer an empty page instead of an error.
+- A failed share-link delivery no longer shows the owner's app button or Settings advice to the person who
+  opened the link; they get a plain "try the link again" message.
+- The file list shows the right star for every favourite, not only the newest 500.
+- Renaming and moving a file in one request now writes both entries to the activity log.
+- Folder name boxes stop at 100 characters (the server limit), and the file list notes when a type or
+  extension filter is searching every folder.
+- The activity log names the "sign-in lock reset" action, and the loading tip no longer promises a fixed
+  number of days for Trash.
+- Removed a duplicated folder-id check in the file list route.
+- Albums: when the files of one album reach different server instances they now share ONE status message and
+  one combined result (new `album_reports` table; run `supabase/upgrade_albums.sql` once on an existing
+  database). Without the table albums behave as before.
+- Slow saves: a save still running after 15 seconds changes "⏳ Saving…" to a clear "still saving" notice (and
+  to ✅ when it finishes), so a message can no longer sit on "Saving…" without explanation. Albums show how
+  many files are still saving.
+- All tests now live in one file, `src/all_test.ts`, with shared setup in `src/test_env.ts`.
+- README: documented `PORT`, `TRUSTED_IP_HEADER`, `TRUSTED_PROXY_HOPS` and the known limits above.
 - Deleting a folder now moves the whole folder (all subfolders and files) to Trash as one item. Nothing is
   left behind in My Files. The Trash shows the folder with its file and subfolder counts and where it was;
   Restore rebuilds the exact tree (same folders, same names, every file back in its original folder) and
