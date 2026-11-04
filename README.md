@@ -239,7 +239,7 @@ More in [DEPLOYMENT.md](DEPLOYMENT.md#if-something-goes-wrong).
 ### Known limits
 
 - **Albums on several server instances.** Files of one album can reach different instances of a serverless
-  host. 
+  host.
 - **Very slow saves.** After 15 seconds a save still in progress changes its message to "⏳ Still saving -
   this file is taking longer than usual" and finishes with ✅ when it completes. The webhook itself answers
   after 25 seconds. If the host stops the instance in between, that notice stays; send the file again, nothing
