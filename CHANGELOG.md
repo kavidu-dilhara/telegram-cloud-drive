@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.0
 
 **Security**
 
@@ -134,9 +134,7 @@
 - Telegram `/favorite` and `/favorites` now list favorites in pages, with a button to remove each one.
 - "Load more files" no longer adds results from an earlier folder, search or filter.
 
-## 1.0.0
-
-First public release.
+## First public release.
 
 **Features**
 
