@@ -1,0 +1,55 @@
+name: Build Release Archive
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-archive:
+    name: Create and Upload Release Archive
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Create telegram-cloud-drive.tar.gz
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+
+          echo "Creating archive for release: ${RELEASE_TAG}"
+
+          git archive \
+            --format=tar.gz \
+            --prefix=telegram-cloud-drive/ \
+            "${RELEASE_TAG}" \
+            > telegram-cloud-drive.tar.gz
+
+          echo "Archive created successfully."
+
+          ls -lh telegram-cloud-drive.tar.gz
+
+          # Verify archive contents
+          tar -tzf telegram-cloud-drive.tar.gz > /dev/null
+
+      - name: Upload archive to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+
+          gh release upload \
+            "${RELEASE_TAG}" \
+            telegram-cloud-drive.tar.gz \
+            --repo "${GITHUB_REPOSITORY}" \
+            --clobber
+
+          echo "Release archive uploaded successfully!"
