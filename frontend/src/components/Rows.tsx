@@ -46,22 +46,41 @@ interface FileItemProps {
   /** Extra text after the size and date, e.g. "Deletes in 12 days". */
   note?: string;
   date?: string;
+  /** Makes the icon and name tappable, like a normal file manager. */
+  onOpen?: () => void;
+  openLabel?: string;
 }
 
-export function FileItem({ file, leading, actions, note, date }: FileItemProps) {
-  return (
-    <li className="row">
-      {leading}
+export function FileItem({ file, leading, actions, note, date, onOpen, openLabel }: FileItemProps) {
+  const body = (
+    <>
       <span className="file-icon">
         <FileTypeIcon file={file} />
       </span>
-      <div className="row-info">
+      <span className="row-info">
         <b>{file.file_name}</b>
         <small>
           {[formatSize(Number(file.file_size)), formatDate(date ?? file.created_at), note].filter(Boolean)
             .join(" · ")}
         </small>
-      </div>
+      </span>
+    </>
+  );
+  return (
+    <li className="row">
+      {leading}
+      {onOpen
+        ? (
+          <button
+            type="button"
+            className="row-main"
+            onClick={onOpen}
+            aria-label={openLabel ?? `Open ${file.file_name}`}
+          >
+            {body}
+          </button>
+        )
+        : <div className="row-main">{body}</div>}
       <div className="row-actions">{actions}</div>
     </li>
   );
