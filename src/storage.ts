@@ -27,6 +27,59 @@ export interface IncomingMedia {
   uniqueId: string;
 }
 
+const KIND_EXTENSIONS: Record<string, string> = {
+  photo: "jpg",
+  video: "mp4",
+  animation: "mp4",
+  video_note: "mp4",
+  audio: "mp3",
+  voice: "ogg",
+};
+
+/** A name that is safe to store: no path separators or control characters, one line, at most 120 characters. */
+const cleanName = (value: unknown): string =>
+  typeof value === "string"
+    ? value.replace(/[\u0000-\u001f\u007f/\\]/g, " ").replace(/\s+/g, " ").trim().slice(0, 120).trim()
+    : "";
+
+const pad = (value: number) => String(value).padStart(2, "0");
+
+/** "2026-11-10_14-32-05" (UTC) from a Telegram message date in seconds. */
+function stamp(date: number | undefined): string {
+  const d = new Date((date ?? Math.floor(Date.now() / 1000)) * 1000);
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}_${pad(d.getUTCHours())}-${
+    pad(d.getUTCMinutes())
+  }-${pad(d.getUTCSeconds())}`;
+}
+
+/**
+ * The best name for an incoming file. Telegram's own file_name always wins. Otherwise: audio tags
+ * ("Performer - Title"), then the first line of the caption, then "<kind>_<date>". Photos, voice messages and
+ * video notes carry no name at all, so they can only use the caption or the date.
+ */
+export function pickFilename(
+  kind: IncomingMedia["kind"],
+  media: Record<string, any>,
+  message: { message_id: number; date?: number; caption?: string },
+  mime: string,
+): string {
+  const extension = MIME_EXTENSIONS[mime] ?? KIND_EXTENSIONS[kind];
+  const withExtension = (base: string) =>
+    !extension || base.toLowerCase().endsWith(`.${extension}`) ? base : `${base}.${extension}`;
+
+  const own = cleanName(media.file_name);
+  if (own) return own;
+
+  if (kind === "audio") {
+    const tags = [cleanName(media.performer), cleanName(media.title)].filter(Boolean).join(" - ");
+    if (tags) return withExtension(tags);
+  }
+  const caption = cleanName((message.caption ?? "").split(/\r?\n/)[0]);
+  if (caption && kind !== "document") return withExtension(caption);
+
+  return withExtension(`${kind}_${stamp(message.date)}`);
+}
+
 /** Reads the media (if any) out of a Telegram message. */
 export function extractMedia(message: Message): IncomingMedia | null {
   const m = message as Message & Record<string, any>;
@@ -45,11 +98,9 @@ export function extractMedia(message: Message): IncomingMedia | null {
   const [kind, media] = found;
   const mime: string = media.mime_type ??
     (kind === "photo" ? "image/jpeg" : kind === "video_note" ? "video/mp4" : "application/octet-stream");
-  const guessed = MIME_EXTENSIONS[mime];
-  const filename: string = media.file_name ?? `${kind}_${message.message_id}${guessed ? `.${guessed}` : ""}`;
   return {
     kind,
-    filename,
+    filename: pickFilename(kind, media, message, mime),
     size: Number(media.file_size ?? 0),
     mime,
     fileId: media.file_id,
