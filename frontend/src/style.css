@@ -580,6 +580,22 @@ footer {
 .row-info b {
   overflow-wrap: anywhere;
 }
+/* One line per name: the middle is cut with an ellipsis and the extension stays visible. */
+.row-info .name-line {
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+}
+.name-base {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.name-ext {
+  flex: none;
+  white-space: pre;
+}
 .row-info small {
   color: var(--muted);
   font-size: 13px;
