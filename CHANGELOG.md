@@ -4,6 +4,13 @@
 
 **Added**
 
+- Image preview works like a normal file manager: tap an image row to open it, then use the arrow buttons, the
+  left/right arrow keys or a swipe to move through the images in the current list. While anything is selected,
+  tapping a row selects it instead. The ⋯ menu "Preview" entry opens the same viewer.
+- New setting "Largest image to preview" (1–20 MB, default 2 MB, matching the old fixed limit). It is
+  validated on the server (`preview_max_mb`) and applies to the viewer and the preview endpoint. 20 MB is the
+  most Telegram lets a bot download. Files exactly at the limit are now allowed (the old check refused 2 MB
+  itself).
 - Saved files keep the best name Telegram provides: its own file name first, then "Performer - Title" for
   audio, then the first line of the caption, then `<kind>_<date>` (for example
   `video_2026-11-10_14-32-05.mp4`) instead of the message id. Photos, voice messages and video notes carry no
