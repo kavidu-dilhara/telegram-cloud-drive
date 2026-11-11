@@ -4347,3 +4347,62 @@ import { webhookCallback } from "grammy";
     assert.equal(albumTableMissing(null), false);
   });
 }
+
+{
+  const { extractMedia } = await import("./storage.ts");
+  // 2026-11-10 14:32:05 UTC
+  const date = Date.UTC(2026, 10, 10, 14, 32, 5) / 1000;
+  const base = { message_id: 9, date, chat: { id: 1, type: "private" } } as never;
+  const make = (extra: Record<string, unknown>) => ({ ...(base as object), ...extra }) as never;
+
+  Deno.test("extractMedia: Telegram's own file name always wins", () => {
+    const item = extractMedia(make({
+      document: {
+        file_id: "a",
+        file_unique_id: "u",
+        file_name: "Report 2026.pdf",
+        mime_type: "application/pdf",
+      },
+      caption: "ignored",
+    }));
+    assert.equal(item?.filename, "Report 2026.pdf");
+  });
+
+  Deno.test("extractMedia: audio without a file name uses performer and title", () => {
+    const item = extractMedia(make({
+      audio: {
+        file_id: "a",
+        file_unique_id: "u",
+        performer: "Artist",
+        title: "Song",
+        mime_type: "audio/mpeg",
+      },
+    }));
+    assert.equal(item?.filename, "Artist - Song.mp3");
+  });
+
+  Deno.test("extractMedia: nameless media uses the first caption line, then the message date", () => {
+    const captioned = extractMedia(make({
+      video: { file_id: "v", file_unique_id: "u", mime_type: "video/mp4" },
+      caption: "Trip to Kandy\nday two",
+    }));
+    assert.equal(captioned?.filename, "Trip to Kandy.mp4");
+    const plain = extractMedia(
+      make({ video: { file_id: "v", file_unique_id: "u", mime_type: "video/mp4" } }),
+    );
+    assert.equal(plain?.filename, "video_2026-11-10_14-32-05.mp4");
+    const voice = extractMedia(
+      make({ voice: { file_id: "v", file_unique_id: "u", mime_type: "audio/ogg" } }),
+    );
+    assert.equal(voice?.filename, "voice_2026-11-10_14-32-05.ogg");
+    const photo = extractMedia(make({ photo: [{ file_id: "p", file_unique_id: "u" }] }));
+    assert.equal(photo?.filename, "photo_2026-11-10_14-32-05.jpg");
+  });
+
+  Deno.test("extractMedia: names never contain path separators or line breaks", () => {
+    const item = extractMedia(make({
+      video: { file_id: "v", file_unique_id: "u", file_name: "a/b\\c\nd.mp4" },
+    }));
+    assert.equal(item?.filename, "a b c d.mp4");
+  });
+}
