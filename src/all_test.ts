@@ -27,6 +27,12 @@ import { webhookCallback } from "grammy";
 
 // The hourly background cleanup starts with the first authenticated request. Let that one run happen now, against
 // a database that does nothing, so it can never overlap (and disturb) a later test.
+
+/** Wraps a `files` table mock: the preview size setting lookup answers "not set", so the 2 MB default applies. */
+const withSettings = (files: () => unknown) => (table: string) =>
+  table === "settings"
+    ? { select: () => ({ eq: () => ({ maybeSingle: () => Promise.resolve({ data: null, error: null }) }) }) }
+    : files();
 {
   const { maybeRunMaintenance } = await import("./maintenance.ts");
   const { db } = await import("./db.ts");
@@ -1083,7 +1089,7 @@ import { webhookCallback } from "grammy";
   Deno.test("preview: a Sinhala file name no longer breaks the response", async () => {
     const realFetch = globalThis.fetch;
     try {
-      client.from = () => ({
+      client.from = withSettings(() => ({
         select: () => ({
           eq: () => ({
             eq: () => ({
@@ -1099,7 +1105,7 @@ import { webhookCallback } from "grammy";
             }),
           }),
         }),
-      });
+      }));
       globalThis.fetch = ((input: string | URL | Request) => {
         const url = String(input instanceof Request ? input.url : input);
         return Promise.resolve(
@@ -2329,7 +2335,7 @@ import { webhookCallback } from "grammy";
     const lines: string[] = [];
     try {
       console.error = (...args: unknown[]) => void lines.push(args.map(String).join(" "));
-      client.from = () => ({
+      client.from = withSettings(() => ({
         select: () => ({
           eq: () => ({
             eq: () => ({
@@ -2341,7 +2347,7 @@ import { webhookCallback } from "grammy";
             }),
           }),
         }),
-      });
+      }));
       globalThis.fetch = ((input: string | URL | Request) => {
         const url = String(input instanceof Request ? input.url : input);
         return url.includes("/getFile")
@@ -3375,11 +3381,11 @@ import { webhookCallback } from "grammy";
       const app = new Hono();
       app.route("/", fileRoutes);
       for (const mime of ["image/svg+xml", "image/svg+xml; charset=utf-8", "text/html", "image/x-icon"]) {
-        client.from = () => fileRow(mime);
+        client.from = withSettings(() => fileRow(mime));
         assert.equal((await app.request(`/files/${FILE}/preview`)).status, 415, mime);
       }
 
-      client.from = () => fileRow("image/png");
+      client.from = withSettings(() => fileRow("image/png"));
       globalThis.fetch = ((input: string | URL | Request) => {
         const url = String(input instanceof Request ? input.url : input);
         return Promise.resolve(
@@ -4404,5 +4410,72 @@ import { webhookCallback } from "grammy";
       video: { file_id: "v", file_unique_id: "u", file_name: "a/b\\c\nd.mp4" },
     }));
     assert.equal(item?.filename, "a b c d.mp4");
+  });
+}
+
+{
+  const { isPreviewMb, previewLimitBytes } = await import("./lib.ts");
+
+  Deno.test("preview size setting: whole numbers from 1 to 20 MB only", () => {
+    for (const ok of [1, 2, 10, 20]) assert.equal(isPreviewMb(ok), true);
+    for (const bad of [0, 21, -1, 2.5, "5", null, undefined, NaN, Infinity]) {
+      assert.equal(isPreviewMb(bad), false);
+    }
+  });
+
+  Deno.test("preview limit: uses the setting, falls back to 2 MB for anything invalid", () => {
+    assert.equal(previewLimitBytes(10), 10 * 1024 * 1024);
+    assert.equal(previewLimitBytes(20), 20 * 1024 * 1024);
+    assert.equal(previewLimitBytes(undefined), 2 * 1024 * 1024);
+    assert.equal(previewLimitBytes("50"), 2 * 1024 * 1024);
+    assert.equal(previewLimitBytes(999), 2 * 1024 * 1024);
+  });
+}
+
+{
+  const { db } = await import("./db.ts");
+  const { fileRoutes } = await import("./routes/files.ts");
+  const client = db as any;
+  const FILE = "11111111-1111-4111-8111-111111111111";
+
+  Deno.test("preview: the size limit comes from the setting and a file exactly at the limit is allowed", async () => {
+    const realFetch = globalThis.fetch;
+    const real = console.error;
+    const row = (size: number) => ({
+      select: () => ({
+        eq: () => ({
+          eq: () => ({
+            maybeSingle: () =>
+              Promise.resolve({
+                data: { telegram_file_id: "tg", file_size: size, mime_type: "image/png", file_name: "a.png" },
+              }),
+          }),
+        }),
+      }),
+    });
+    const settings = (value: unknown) => ({
+      select: () => ({
+        eq: () => ({ maybeSingle: () => Promise.resolve({ data: { value }, error: null }) }),
+      }),
+    });
+    const MB = 1024 * 1024;
+    try {
+      console.error = () => undefined;
+      globalThis.fetch = (() => Promise.reject(new Error("offline"))) as typeof fetch;
+      const app = new Hono();
+      app.route("/", fileRoutes);
+      const status = async (size: number, setting: unknown) => {
+        client.from = (table: string) => table === "settings" ? settings(setting) : row(size);
+        return (await app.request(`/files/${FILE}/preview`)).status;
+      };
+      assert.equal(await status(5 * MB, undefined), 413); // default 2 MB
+      assert.equal(await status(5 * MB, 4), 413);
+      assert.equal(await status(5 * MB, 5), 502); // exactly at the limit: allowed, then Telegram is offline
+      assert.equal(await status(5 * MB, 10), 502);
+      assert.equal(await status(5 * MB, "oops"), 413); // invalid setting falls back to 2 MB
+    } finally {
+      globalThis.fetch = realFetch;
+      console.error = real;
+    }
   });
 }

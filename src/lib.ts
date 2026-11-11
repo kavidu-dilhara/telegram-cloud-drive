@@ -247,6 +247,18 @@ export function previewImageType(mime: unknown): string | null {
   return PREVIEW_IMAGE_TYPES.includes(type) ? type : null;
 }
 
+/** Default and maximum image preview size in MB. Telegram's Bot API cannot send bots files above 20 MB. */
+export const DEFAULT_PREVIEW_MB = 2;
+export const MAX_PREVIEW_MB = 20;
+
+/** A valid "preview size" setting: a whole number of MB from 1 to 20. */
+export const isPreviewMb = (value: unknown): value is number =>
+  typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= MAX_PREVIEW_MB;
+
+/** The preview size limit in bytes for a stored setting; anything invalid falls back to the 2 MB default. */
+export const previewLimitBytes = (value: unknown): number =>
+  (isPreviewMb(value) ? value : DEFAULT_PREVIEW_MB) * 1024 * 1024;
+
 export interface ClientIpOptions {
   /** Header the hosting platform sets or overwrites. Leave unset to use the connection address only. */
   header?: "cf-connecting-ip" | "x-forwarded-for";
