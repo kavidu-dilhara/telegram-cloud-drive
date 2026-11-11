@@ -33,7 +33,7 @@
   number of days for Trash.
 - Removed a duplicated folder-id check in the file list route.
 - Albums: when the files of one album reach different server instances they now share ONE status message and
-  one combined result (new `album_reports` table; run `supabase/upgrade_albums.sql` once on an existing
+  one combined result (new `album_reports` table, included in `supabase/schema.sql`; re-run it on an existing
   database). Without the table albums behave as before.
 - Slow saves: a save still running after 15 seconds changes "⏳ Saving…" to a clear "still saving" notice (and
   to ✅ when it finishes), so a message can no longer sit on "Saving…" without explanation. Albums show how
