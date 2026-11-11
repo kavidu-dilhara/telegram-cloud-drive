@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckSquare,
+  ChevronLeft,
   ChevronRight,
   Copy,
   Eye,
@@ -68,11 +69,19 @@ export default function FilesPage() {
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [selectedFolders, setSelectedFolders] = useState<Set<string>>(new Set());
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
-  const [preview, setPreview] = useState<FileRow | null>(null);
+  const [previewId, setPreviewId] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewFailed, setPreviewFailed] = useState(false);
+  const touchStartX = useRef<number | null>(null);
   const requestId = useRef(0);
 
+  // The viewer walks through the images of the current list, like a normal file manager.
+  const previewMb = settings.preview_max_mb;
+  const gallery = useMemo(() => items.filter((file) => canPreview(file, previewMb)), [items, previewMb]);
+  const previewIndex = previewId ? gallery.findIndex((file) => file.id === previewId) : -1;
+  const preview = previewIndex >= 0 ? gallery[previewIndex] : null;
+
+  const selecting = selectedFiles.size > 0 || selectedFolders.size > 0;
   const filtering = Boolean(debouncedQuery || type || debouncedExtension);
   const params = useMemo(() => {
     const search = new URLSearchParams({ folder_id: folderId ?? "root", limit: "50" });
@@ -129,13 +138,33 @@ export default function FilesPage() {
     parentOfCurrent,
   ]);
 
+  // The image left the list (deleted, moved or the list reloaded): close the viewer.
+  useEffect(() => {
+    if (previewId && previewIndex < 0) setPreviewId(null);
+  }, [previewId, previewIndex]);
+
+  const stepPreview = useCallback((direction: 1 | -1) => {
+    const next = gallery[previewIndex + direction];
+    if (next) setPreviewId(next.id);
+  }, [gallery, previewIndex]);
+
   useEffect(() => {
     if (!preview) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "ArrowLeft") stepPreview(-1);
+      else if (event.key === "ArrowRight") stepPreview(1);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [preview, stepPreview]);
+
+  useEffect(() => {
+    if (!previewId) return;
     let url: string | null = null;
     let cancelled = false;
     setPreviewUrl(null);
     setPreviewFailed(false);
-    fetchBlobUrl(`/api/files/${preview.id}/preview`)
+    fetchBlobUrl(`/api/files/${previewId}/preview`)
       .then((value) => {
         if (cancelled) URL.revokeObjectURL(value);
         else {
@@ -148,7 +177,7 @@ export default function FilesPage() {
       cancelled = true;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [preview]);
+  }, [previewId]);
 
   const refresh = useCallback(() => {
     setReloadKey((key) => key + 1);
@@ -467,8 +496,8 @@ export default function FilesPage() {
     {
       label: "Preview",
       icon: <Eye size={16} aria-hidden="true" />,
-      hidden: !canPreview(file),
-      onSelect: () => setPreview(file),
+      hidden: !canPreview(file, previewMb),
+      onSelect: () => setPreviewId(file.id),
     },
     { label: "Share", icon: <Link2 size={16} aria-hidden="true" />, onSelect: () => void shareFile(file) },
     {
@@ -757,6 +786,12 @@ export default function FilesPage() {
                 <FileItem
                   key={file.id}
                   file={file}
+                  onOpen={selecting
+                    ? () => toggle(setSelectedFiles, file.id)
+                    : canPreview(file, previewMb)
+                    ? () => setPreviewId(file.id)
+                    : undefined}
+                  openLabel={selecting ? `Select ${file.file_name}` : `Preview ${file.file_name}`}
                   leading={
                     <SelectBox
                       checked={selectedFiles.has(file.id)}
@@ -798,8 +833,38 @@ export default function FilesPage() {
       </div>
 
       {preview && (
-        <Modal title={preview.file_name} onClose={() => setPreview(null)} wide>
-          <div className="preview-frame">
+        <Modal title={preview.file_name} onClose={() => setPreviewId(null)} wide>
+          <div
+            className="preview-frame"
+            onTouchStart={(event) => {
+              touchStartX.current = event.touches[0]?.clientX ?? null;
+            }}
+            onTouchEnd={(event) => {
+              const start = touchStartX.current;
+              touchStartX.current = null;
+              const end = event.changedTouches[0]?.clientX;
+              if (start === null || end === undefined || Math.abs(end - start) < 50) return;
+              stepPreview(end < start ? 1 : -1);
+            }}
+          >
+            <button
+              type="button"
+              className="icon-button preview-nav preview-prev"
+              aria-label="Previous image"
+              disabled={previewIndex <= 0}
+              onClick={() => stepPreview(-1)}
+            >
+              <ChevronLeft size={22} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="icon-button preview-nav preview-next"
+              aria-label="Next image"
+              disabled={previewIndex >= gallery.length - 1}
+              onClick={() => stepPreview(1)}
+            >
+              <ChevronRight size={22} aria-hidden="true" />
+            </button>
             {!previewUrl && !previewFailed && (
               <div className="progress" role="progressbar" aria-label="Loading preview" />
             )}
@@ -815,7 +880,9 @@ export default function FilesPage() {
                 previewUrl && <img src={previewUrl} alt={preview.file_name} />
               )}
           </div>
-          <p className="hint">Image preview · {formatSize(Number(preview.file_size))}</p>
+          <p className="hint">
+            Image {previewIndex + 1} of {gallery.length} · {formatSize(Number(preview.file_size))}
+          </p>
         </Modal>
       )}
     </>

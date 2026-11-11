@@ -189,6 +189,20 @@ export default function SettingsPage() {
               <option value="size">Largest first</option>
             </select>
           </label>
+          <label className="field">
+            <span>Largest image to preview</span>
+            <select
+              value={settings.preview_max_mb}
+              onChange={(event) => void change("preview_max_mb", Number(event.target.value))}
+            >
+              {[...new Set([1, 2, 5, 10, 15, 20, settings.preview_max_mb])].sort((a, b) => a - b).map((mb) => (
+                <option key={mb} value={mb}>{mb} MB</option>
+              ))}
+            </select>
+            <small className="hint">
+              Larger images are slower to open. Telegram allows bots to read files up to 20 MB.
+            </small>
+          </label>
           <Toggle
             label="Compact rows"
             hint="Fit more files on screen"
