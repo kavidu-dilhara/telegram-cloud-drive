@@ -3,7 +3,7 @@ import denoConfig from "../../deno.json" with { type: "json" };
 import { allowedOrigins, config } from "../config.ts";
 import { db, filesByIds, folderExists, logAction } from "../db.ts";
 import { type AppEnv, fail, jsonBody } from "../http.ts";
-import { isUuid, recentWebhookError } from "../lib.ts";
+import { DEFAULT_PREVIEW_MB, isPreviewMb, isUuid, recentWebhookError } from "../lib.ts";
 import { bot } from "../telegram.ts";
 
 export const systemRoutes = new Hono<AppEnv>();
@@ -27,6 +27,7 @@ export const DEFAULT_SETTINGS = {
   default_view: "list",
   confirm_delete: true,
   confirm_move: true,
+  preview_max_mb: DEFAULT_PREVIEW_MB,
   incoming_folder_id: null as string | null,
 };
 
@@ -61,6 +62,7 @@ systemRoutes.patch("/settings", async (c) => {
     if (key === "default_sort" && !["newest", "oldest", "name", "size"].includes(String(value))) {
       return fail(c, "Invalid sort order");
     }
+    if (key === "preview_max_mb" && !isPreviewMb(value)) return fail(c, "Invalid preview size");
     if (key === "default_view" && !["list", "grid"].includes(String(value))) return fail(c, "Invalid view");
     if (key === "incoming_folder_id" && value !== null && (!isUuid(value) || !await folderExists(value))) {
       return fail(c, "Invalid incoming folder");

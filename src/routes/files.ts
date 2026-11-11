@@ -20,6 +20,7 @@ import {
   isUuid,
   parseIds,
   previewImageType,
+  previewLimitBytes,
   renameKeepingExtension,
 } from "../lib.ts";
 import { purgeTrash } from "../maintenance.ts";
@@ -27,7 +28,6 @@ import { type ChannelMessage, kickPendingDeletions } from "../telegram.ts";
 
 export const fileRoutes = new Hono<AppEnv>();
 
-const PREVIEW_LIMIT = 2 * 1024 * 1024;
 const TYPE_PREFIX: Record<string, string> = { image: "image/%", video: "video/%", audio: "audio/%" };
 const now = () => new Date().toISOString();
 /** Ids per database request: 100 UUIDs keep the request URL well under common proxy limits. */
@@ -443,8 +443,12 @@ fileRoutes.get("/files/:id/preview", async (c) => {
   if (!file) return fail(c, "File not found", 404);
   const mime = previewImageType(file.mime_type);
   if (!mime) return fail(c, "Only PNG, JPEG, GIF and WebP images can be previewed", 415);
-  if (Number(file.file_size ?? 0) >= PREVIEW_LIMIT) {
-    return fail(c, "Image preview is limited to files under 2 MB", 413);
+  // The limit is a setting; if it cannot be read the 2 MB default applies.
+  const { data: limitSetting } = await db.from("settings").select("value").eq("key", "preview_max_mb")
+    .maybeSingle();
+  const limit = previewLimitBytes(limitSetting?.value);
+  if (Number(file.file_size ?? 0) > limit) {
+    return fail(c, `Image preview is limited to files up to ${limit / 1024 / 1024} MB`, 413);
   }
 
   // These URLs contain the bot token, and a network error carries the URL: catch here and log it redacted.
