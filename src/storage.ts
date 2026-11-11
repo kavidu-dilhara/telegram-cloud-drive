@@ -37,10 +37,14 @@ const KIND_EXTENSIONS: Record<string, string> = {
 };
 
 /** A name that is safe to store: no path separators or control characters, one line, at most 120 characters. */
-const cleanName = (value: unknown): string =>
-  typeof value === "string"
-    ? value.replace(/[\u0000-\u001f\u007f/\\]/g, " ").replace(/\s+/g, " ").trim().slice(0, 120).trim()
-    : "";
+const cleanName = (value: unknown): string => {
+  if (typeof value !== "string") return "";
+  const text = Array.from(value, (char) => {
+    const code = char.codePointAt(0) ?? 0;
+    return code < 32 || code === 127 || char === "/" || char === "\\" ? " " : char;
+  }).join("");
+  return text.replace(/\s+/g, " ").trim().slice(0, 120).trim();
+};
 
 const pad = (value: number) => String(value).padStart(2, "0");
 
