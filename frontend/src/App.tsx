@@ -38,6 +38,7 @@ const DEFAULT_SETTINGS: Settings = {
   default_view: "list",
   confirm_delete: true,
   confirm_move: true,
+  preview_max_mb: 2,
   incoming_folder_id: null,
 };
 

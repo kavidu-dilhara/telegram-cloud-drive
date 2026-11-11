@@ -828,6 +828,23 @@ footer {
   border-radius: 14px;
   background: var(--surface-2);
 }
+.preview-nav {
+  position: absolute;
+  top: 50%;
+  z-index: 1;
+  transform: translateY(-50%);
+  background: rgba(8, 12, 20, 0.55);
+  color: #fff;
+}
+.preview-nav:disabled {
+  opacity: 0.3;
+}
+.preview-prev {
+  left: 8px;
+}
+.preview-next {
+  right: 8px;
+}
 .preview-frame img {
   max-width: 100%;
   max-height: 70dvh;

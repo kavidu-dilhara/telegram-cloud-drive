@@ -55,6 +55,7 @@ export interface Settings {
   default_view: "list" | "grid";
   confirm_delete: boolean;
   confirm_move: boolean;
+  preview_max_mb: number;
   incoming_folder_id: string | null;
 }
 
