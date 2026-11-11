@@ -28,7 +28,7 @@ export const albumTableMissing = (error: { code?: string } | null): boolean =>
 
 /**
  * Album counters in Supabase. Every method throws on a database error; the album tracker then falls back to
- * counting on one server only, so albums keep working even before `supabase/upgrade_albums.sql` has been run.
+ * counting on one server only, so albums keep working even before the album tables from `supabase/schema.sql` exist.
  */
 export const databaseAlbums: SharedAlbum = {
   async claim(key) {

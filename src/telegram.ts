@@ -102,7 +102,13 @@ export async function retryPendingDeletions(
     // Never delete a message that a file still points at.
     const { count, error: usedError } = await db.from("files").select("id", { count: "exact", head: true })
       .eq("telegram_chat_id", row.chat_id).eq("telegram_message_id", row.message_id);
-    if (usedError) continue;
+    if (usedError) {
+      // Look again later instead of straight away, so a database problem cannot turn the drain into a busy loop.
+      await db.from("pending_message_deletions").update({
+        next_try_at: new Date(Date.now() + retryDelayMinutes(1) * 60_000).toISOString(),
+      }).match(key);
+      continue;
+    }
     if ((count ?? 0) > 0) {
       await db.from("pending_message_deletions").delete().match(key);
       continue;

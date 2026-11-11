@@ -92,7 +92,10 @@ export function extensionOf(fileName: string): string | null {
 /** Everything after the last dot exactly as stored (any characters, any length), or null. The app shows the same. */
 export function suffixOf(fileName: string): string | null {
   const index = fileName.lastIndexOf(".");
-  return index <= 0 || index === fileName.length - 1 ? null : fileName.slice(index + 1);
+  if (index <= 0 || index === fileName.length - 1) return null;
+  const suffix = fileName.slice(index + 1);
+  // Text with a space in it ("Mr. Smith", "v1. final draft") is part of the name, not an extension.
+  return /\s/.test(suffix) ? null : suffix;
 }
 
 /**

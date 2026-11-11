@@ -31,8 +31,12 @@ export async function purgeTrash(olderThanDays: number | null): Promise<{ purged
 
 export async function runMaintenance(): Promise<MaintenanceResult> {
   const result: MaintenanceResult = { purgedFiles: 0, deletedMessages: 0, deletedActivity: 0 };
-  const purge = await purgeTrash(config.trashRetentionDays);
-  result.purgedFiles = purge.purged;
+  // A failed purge must not skip the other cleanups below; it is logged and retried on the next run.
+  try {
+    result.purgedFiles = (await purgeTrash(config.trashRetentionDays)).purged;
+  } catch (error) {
+    logError("Maintenance: unable to purge old Trash", error);
+  }
 
   const activityCutoff = new Date(Date.now() - config.activityRetentionDays * 86_400_000).toISOString();
   const { count, error: activityError } = await db.from("activity_logs").delete({ count: "exact" }).lt(
