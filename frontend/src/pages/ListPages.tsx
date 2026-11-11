@@ -2,7 +2,7 @@ import { type ReactNode, useEffect, useState } from "react";
 import { Activity, Copy, Link2, Send, Star, Trash2, X } from "lucide-react";
 import { api, messageOf } from "../api";
 import { copyText, useDialogs } from "../components/Dialogs";
-import { EmptyState, PageHeader, SkeletonRows } from "../components/Rows";
+import { EmptyState, NameText, PageHeader, SkeletonRows } from "../components/Rows";
 import { useToast } from "../components/Toasts";
 import { useApp } from "../context";
 import { pushBack, shareViaTelegram } from "../telegram";
@@ -110,7 +110,7 @@ export function FavoritesPage() {
                   <Star size={20} aria-hidden="true" />
                 </span>
                 <div className="row-info">
-                  <b>{favorite.file.file_name}</b>
+                  <NameText name={favorite.file.file_name} keepExtension />
                   <small>{formatSize(Number(favorite.file.file_size))}</small>
                 </div>
                 <div className="row-actions">
@@ -181,7 +181,7 @@ export function SharedPage() {
                   <Link2 size={20} aria-hidden="true" />
                 </span>
                 <div className="row-info">
-                  <b>{share.file.file_name}</b>
+                  <NameText name={share.file.file_name} keepExtension />
                   <small className="wrap">
                     {share.url ?? "Link unavailable. Revoke it and share the file again."}
                   </small>

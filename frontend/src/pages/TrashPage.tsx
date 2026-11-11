@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { FolderOpen, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
 import { api, messageOf } from "../api";
 import { useDialogs } from "../components/Dialogs";
-import { EmptyState, FileItem, PageHeader, SkeletonRows } from "../components/Rows";
+import { EmptyState, FileItem, NameText, PageHeader, SkeletonRows } from "../components/Rows";
 import { useToast } from "../components/Toasts";
 import { pushBack } from "../telegram";
 import { useApp } from "../context";
@@ -221,7 +221,7 @@ export default function TrashPage() {
                       <FolderOpen size={20} aria-hidden="true" />
                     </span>
                     <div className="row-info">
-                      <b>{folder.name}</b>
+                      <NameText name={folder.name} />
                       <small>
                         {[
                           `Folder · ${describeFolder(folder)}`,
