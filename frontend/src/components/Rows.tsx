@@ -10,7 +10,7 @@ import {
   Video,
 } from "lucide-react";
 import type { FileRow } from "../types";
-import { cx, extensionOf, formatDate, formatSize } from "../utils";
+import { cx, extensionOf, formatDate, formatSize, splitName } from "../utils";
 
 export function FileTypeIcon({ file }: { file: FileRow }) {
   const ext = (file.extension || extensionOf(file.file_name).slice(1)).toLowerCase();
@@ -39,6 +39,20 @@ export function SelectBox(
   );
 }
 
+/**
+ * A name on one line. When it does not fit, the middle is cut with "…" and the extension stays visible
+ * ("very long holiday photo na….jpg"). The full name is in the tooltip, the viewer title and the rename box.
+ */
+export function NameText({ name, keepExtension = false }: { name: string; keepExtension?: boolean }) {
+  const { base, ext } = keepExtension ? splitName(name) : { base: name, ext: "" };
+  return (
+    <b className="name-line" title={name}>
+      <span className="name-base">{base}</span>
+      {ext && <span className="name-ext">{ext}</span>}
+    </b>
+  );
+}
+
 interface FileItemProps {
   file: FileRow;
   leading?: ReactNode;
@@ -58,7 +72,7 @@ export function FileItem({ file, leading, actions, note, date, onOpen, openLabel
         <FileTypeIcon file={file} />
       </span>
       <span className="row-info">
-        <b>{file.file_name}</b>
+        <NameText name={file.file_name} keepExtension />
         <small>
           {[formatSize(Number(file.file_size)), formatDate(date ?? file.created_at), note].filter(Boolean)
             .join(" · ")}
@@ -103,7 +117,7 @@ export function FolderItem({ name, selected, onSelect, onOpen, actions }: Folder
           <FolderOpen size={20} aria-hidden="true" />
         </span>
         <span className="row-info">
-          <b>{name}</b>
+          <NameText name={name} />
           <small>Folder</small>
         </span>
       </button>
