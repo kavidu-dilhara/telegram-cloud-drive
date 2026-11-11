@@ -19,6 +19,8 @@
 
 **Fixes**
 
+- Long file and folder names now stay on one line instead of wrapping to two or three. The name is cut with
+  "…" and the extension stays visible; the full name shows as a tooltip and in the viewer title and rename box.
 - Queued channel deletions are rescheduled when the "is this message still used?" check fails, instead of
   being re-read in a tight loop that hammered the database for up to 10 minutes.
 - Renaming a file no longer glues a "suffix" containing a space onto the new name ("Mr. Smith" renamed to "Mr.
