@@ -23,7 +23,10 @@ export function daysLeft(deletedAt: string | null, retentionDays: number): numbe
 
 export function extensionOf(name: string): string {
   const index = name.lastIndexOf(".");
-  return index > 0 && index < name.length - 1 ? name.slice(index) : "";
+  if (index <= 0 || index >= name.length - 1) return "";
+  const ext = name.slice(index);
+  // Same rule as the server: text with a space in it is part of the name, not an extension.
+  return /\s/.test(ext) ? "" : ext;
 }
 
 /** Splits "report.pdf" into the editable base name and the extension that is always kept. */

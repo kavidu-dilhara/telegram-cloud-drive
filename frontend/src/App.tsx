@@ -55,7 +55,7 @@ const initialPage = (): Page => {
   return NAV.some((item) => item.page === view) ? (view as Page) : "files";
 };
 
-type Phase = "loading" | "unauth" | "ready";
+type Phase = "loading" | "unauth" | "ready" | "failed";
 
 /** The explanation shown on the login screen when Telegram sign-in did not work. */
 function telegramFailureNotice(caught: unknown): string {
@@ -74,6 +74,8 @@ function Shell() {
   const [page, setPage] = useState<Page>(initialPage);
   const firstRender = useRef(true);
   const phaseRef = useRef<Phase>("loading");
+  const saveCounter = useRef(0);
+  const [startAttempt, setStartAttempt] = useState(0);
   phaseRef.current = phase;
 
   const reloadFolders = useCallback(async () => {
@@ -141,13 +143,19 @@ function Shell() {
       }
       try {
         await loadAll();
-      } catch {
-        setNotice(telegramProblem);
-        setPhase("unauth");
+      } catch (caught) {
+        // Only a rejected session means "sign in". A server or network problem is not a sign-in problem.
+        if (caught instanceof ApiError && caught.status === 401) {
+          setNotice(telegramProblem);
+          setPhase("unauth");
+        } else {
+          setNotice(telegramProblem ?? messageOf(caught, "Cloud Drive could not load."));
+          setPhase("failed");
+        }
       }
     })();
     return () => setUnauthorizedHandler(null);
-  }, [loadAll, recoverSession]);
+  }, [loadAll, recoverSession, startAttempt]);
 
   // ---- theme, density and Telegram chrome colours
   useEffect(() => {
@@ -184,14 +192,16 @@ function Shell() {
 
   const saveSettings = useCallback(async (patch: Partial<Settings>) => {
     const previous = settings;
+    const ticket = ++saveCounter.current;
     setSettings((old) => ({ ...old, ...patch }));
     try {
-      setSettings({
-        ...DEFAULT_SETTINGS,
-        ...(await api<Settings>("/api/settings", { method: "PATCH", json: patch })),
-      });
+      const saved = await api<Settings>("/api/settings", { method: "PATCH", json: patch });
+      // Only the newest save may overwrite the screen, so a slow older answer cannot undo a newer change.
+      if (ticket === saveCounter.current) setSettings({ ...DEFAULT_SETTINGS, ...saved });
     } catch (caught) {
-      setSettings(previous);
+      // Undo only what this request changed, never a newer change made meanwhile.
+      const undo = Object.fromEntries(Object.keys(patch).map((key) => [key, previous[key as keyof Settings]]));
+      setSettings((old) => ({ ...old, ...undo }));
       toast(messageOf(caught, "Unable to save settings"), { kind: "error" });
     }
   }, [settings, toast]);
@@ -236,6 +246,27 @@ function Shell() {
     }), [settings, saveSettings, folders, reloadFolders, session, reloadSession, signOut]);
 
   if (phase === "loading") return <Splash />;
+  if (phase === "failed") {
+    return (
+      <main className="auth-screen" id="main">
+        <div className="auth-card">
+          <h1>Cloud Drive</h1>
+          <div className="banner banner-error" role="alert">{notice ?? "Cloud Drive could not load."}</div>
+          <button
+            type="button"
+            className="btn btn-primary btn-block"
+            onClick={() => {
+              setNotice(undefined);
+              setPhase("loading");
+              setStartAttempt((value) => value + 1);
+            }}
+          >
+            Try again
+          </button>
+        </div>
+      </main>
+    );
+  }
   if (phase === "unauth" || !context) {
     return (
       <LoginScreen
@@ -243,7 +274,13 @@ function Shell() {
         onSignedIn={() => {
           setNotice(undefined);
           setPhase("loading");
-          loadAll().catch(() => setPhase("unauth"));
+          loadAll().catch((caught) => {
+            if (caught instanceof ApiError && caught.status === 401) setPhase("unauth");
+            else {
+              setNotice(messageOf(caught, "Cloud Drive could not load."));
+              setPhase("failed");
+            }
+          });
         }}
       />
     );
