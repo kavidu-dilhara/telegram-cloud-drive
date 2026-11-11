@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+**Added**
+
+- Saved files keep the best name Telegram provides: its own file name first, then "Performer - Title" for
+  audio, then the first line of the caption, then `<kind>_<date>` (for example
+  `video_2026-11-10_14-32-05.mp4`) instead of the message id. Photos, voice messages and video notes carry no
+  name, so they use the caption or the date. Names are cleaned of path separators, control characters and line
+  breaks, and cut at 120 characters.
+
+**Fixes**
+
+- Queued channel deletions are rescheduled when the "is this message still used?" check fails, instead of
+  being re-read in a tight loop that hammered the database for up to 10 minutes.
+- Renaming a file no longer glues a "suffix" containing a space onto the new name ("Mr. Smith" renamed to "Mr.
+  Jones" is now "Mr. Jones", not "Mr. Jones. Smith"). Real extensions such as `.c++` are still kept.
+- A server or network error while the app starts now shows a "Try again" screen instead of the sign-in screen;
+  only a rejected session (401) asks you to sign in.
+- A failed Trash purge in the maintenance run is logged and no longer skips the other cleanups.
+- A failed settings save undoes only the settings it changed, and only the newest save updates the screen.
+- Fixed a lint error (`no-control-regex`) in the file name cleaning that failed the CI backend job.
+
+**Docs**
+
+- Removed every mention of `supabase/upgrade_albums.sql` (the file never existed). The album tables are part
+  of `supabase/schema.sql`; re-run it on an existing database.
+
+**Tests**
+
+- Added tests for file name selection (own name, audio tags, caption, date, unsafe characters).
+
 ## 1.0.0
 
 **Security**
