@@ -19,8 +19,13 @@
 
 **Fixes**
 
+- Browser "Unauthorized" after another tab signed in again or changed the password: the server used to trust
+  the in-memory Bearer token alone, so a stale token hid a valid session cookie. It now tries the Bearer token
+  first and falls back to the cookie. Signing out revokes both, so a stale header cannot keep the cookie
+  session alive.
 - Long file and folder names now stay on one line instead of wrapping to two or three. The name is cut with
-  "…" and the extension stays visible; the full name shows as a tooltip and in the viewer title and rename box.
+  "…" and the extension stays visible; the full name shows as a tooltip and in the viewer title and rename
+  box.
 - Queued channel deletions are rescheduled when the "is this message still used?" check fails, instead of
   being re-read in a tight loop that hammered the database for up to 10 minutes.
 - Renaming a file no longer glues a "suffix" containing a space onto the new name ("Mr. Smith" renamed to "Mr.
