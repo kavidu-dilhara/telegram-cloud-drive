@@ -4479,3 +4479,67 @@ const withSettings = (files: () => unknown) => (table: string) =>
     }
   });
 }
+
+{
+  const { db } = await import("./db.ts");
+  const { config } = await import("./config.ts");
+  const { createSession } = await import("./security.ts");
+  const { requireAuth, publicAuth } = await import("./routes/auth.ts");
+  const { handleError } = await import("./http.ts");
+  // deno-lint-ignore no-explicit-any
+  const client = db as any;
+  const idOf = (token: string) =>
+    JSON.parse(atob(token.split(".")[0].replace(/-/g, "+").replace(/_/g, "/"))).jti as string;
+
+  Deno.test("sessions: a stale Authorization token does not hide a valid cookie session", async () => {
+    const realRpc = client.rpc;
+    try {
+      const stale = await createSession(config.ownerId, 1, "password");
+      const fresh = await createSession(config.ownerId, 1, "password");
+      client.rpc = (_name: string, args: { p_jti: string }) =>
+        Promise.resolve({ data: [{ o_version: 1, o_revoked: args.p_jti === idOf(stale) }], error: null });
+      const app = new Hono();
+      app.onError(handleError);
+      app.use("*", requireAuth);
+      app.get("/ok", (c) => c.text("ok"));
+      const ask = (headers: Record<string, string>) => app.request("/ok", { headers });
+
+      assert.equal(
+        (await ask({ Authorization: `Bearer ${stale}`, Cookie: `drive_session=${fresh}` })).status,
+        200,
+      );
+      assert.equal((await ask({ Authorization: `Bearer ${stale}` })).status, 401);
+      assert.equal((await ask({ Cookie: `drive_session=${stale}` })).status, 401);
+      assert.equal(
+        (await ask({ Authorization: `Bearer ${fresh}`, Cookie: `drive_session=${stale}` })).status,
+        200,
+      );
+      assert.equal((await ask({})).status, 401);
+    } finally {
+      client.rpc = realRpc;
+    }
+  });
+
+  Deno.test("logout: revokes the header session and the cookie session", async () => {
+    const realRpc = client.rpc;
+    try {
+      const a = await createSession(config.ownerId, 1, "password");
+      const b = await createSession(config.ownerId, 1, "password");
+      const revoked: string[] = [];
+      client.rpc = (name: string, args: { p_jti: string }) => {
+        if (name === "revoke_session") revoked.push(args.p_jti);
+        return Promise.resolve({ data: null, error: null });
+      };
+      const app = new Hono();
+      app.route("/", publicAuth);
+      const response = await app.request("/logout", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${a}`, Cookie: `drive_session=${b}` },
+      });
+      assert.equal(response.status, 200);
+      assert.deepEqual(revoked.sort(), [idOf(a), idOf(b)].sort());
+    } finally {
+      client.rpc = realRpc;
+    }
+  });
+}
