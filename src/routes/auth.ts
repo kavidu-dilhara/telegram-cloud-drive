@@ -151,8 +151,12 @@ export const originGuard: MiddlewareHandler = async (c, next) => {
   await next();
 };
 
-/** The session token of a request: the Authorization header, or else the session cookie. */
-function tokenOf(c: import("hono").Context): string | undefined {
+/**
+ * The session tokens a request carries, in the order to try them: the Authorization header first, then the
+ * session cookie. A browser can hold both and they can differ (for example another tab signed in again or
+ * changed the password), so a stale header must not hide a valid cookie.
+ */
+function tokensOf(c: import("hono").Context): string[] {
   const bearer = c.req.header("Authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
   const rawCookie = c.req.header("Cookie")?.match(/(?:^|;\s*)drive_session=([^;]+)/)?.[1];
   let cookie: string | undefined;
@@ -161,7 +165,9 @@ function tokenOf(c: import("hono").Context): string | undefined {
   } catch {
     cookie = undefined;
   }
-  return bearer ?? cookie;
+  return [bearer, cookie].filter((token, index, all): token is string =>
+    Boolean(token) && all.indexOf(token) === index
+  );
 }
 
 /**
@@ -182,16 +188,21 @@ async function sessionAccepted(claims: SessionClaims): Promise<boolean> {
 }
 
 export const requireAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
-  const token = tokenOf(c);
-  const claims = token ? await verifySession(token) : null;
-  if (!claims) return fail(c, "Unauthorized", 401);
+  let claims: SessionClaims | null = null;
   try {
-    if (!await sessionAccepted(claims)) return fail(c, "Unauthorized", 401);
+    for (const token of tokensOf(c)) {
+      const candidate = await verifySession(token);
+      if (candidate && await sessionAccepted(candidate)) {
+        claims = candidate;
+        break;
+      }
+    }
   } catch (error) {
     if (!(error instanceof SessionStoreUnavailableError)) throw error;
     c.header("Retry-After", "5");
     return fail(c, "Unable to verify your session right now. Try again in a moment.", 503);
   }
+  if (!claims) return fail(c, "Unauthorized", 401);
   c.set("session", claims);
   maybeRunMaintenance();
   await next();
@@ -288,10 +299,11 @@ publicAuth.post("/password/login", async (c) => {
 
 publicAuth.post("/logout", async (c) => {
   // Signs out THIS session for good: the token is revoked on the server, not just forgotten by the browser.
+  // Both the header token and the cookie token end here, so a stale header cannot leave the cookie session alive.
   let revoked = false;
-  const token = tokenOf(c);
-  const claims = token ? await verifySession(token) : null;
-  if (claims?.jti) {
+  for (const token of tokensOf(c)) {
+    const claims = await verifySession(token);
+    if (!claims?.jti) continue;
     const { error } = await db.rpc("revoke_session", {
       p_jti: claims.jti,
       p_expires: new Date(claims.exp).toISOString(),
