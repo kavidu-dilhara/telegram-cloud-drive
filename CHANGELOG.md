@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.0
 
 **Added**
 
@@ -40,6 +40,13 @@
 
 - Removed every mention of `supabase/upgrade_albums.sql` (the file never existed). The album tables are part
   of `supabase/schema.sql`; re-run it on an existing database.
+- README: the Preview row now describes the viewer and the size setting, and Saving files mentions real file
+  names. The CI note says the workflow is run manually. The troubleshooting row matches the new "Try again"
+  screen. The Known limits entries for albums and the password sign-in lock now say what really happens (10
+  wrong attempts per username or address, 40 in total, recover with _Reset sign-in lockout_). Project
+  structure lists the entry point, the other backend files, the tests, `vercel.json`, `deno.json`,
+  `.env.example` and `LICENSE`.
+- Fixed the "First public release" heading, which was a top-level heading inside 1.0.0.
 
 **Tests**
 
@@ -179,7 +186,7 @@
 - Telegram `/favorite` and `/favorites` now list favorites in pages, with a button to remove each one.
 - "Load more files" no longer adds results from an earlier folder, search or filter.
 
-## First public release.
+### First public release
 
 **Features**
 
