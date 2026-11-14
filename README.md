@@ -55,17 +55,17 @@ Send files to your own bot, keep them in your own channel, and organise everythi
 
 ## Features
 
-| Area          | What you get                                                                                                    |
-| ------------- | --------------------------------------------------------------------------------------------------------------- |
-| Saving files  | Send or forward any file, photo, video, audio or voice message. Albums are handled and duplicates are detected. |
-| Organising    | Nested folders, rename, move, copy, bulk select, favourites, list or grid view.                                 |
-| Finding       | Search by name across all folders, filter by type or extension, sort by date, name or size.                     |
-| Safety net    | Trash with Undo, restore, automatic purge after 30 days, manual **Empty Trash**.                                |
-| Sharing       | One revocable link per file. The recipient receives the file from your bot.                                     |
-| Preview       | Images under 2 MB.                                                                                              |
-| Bot commands  | `/app` `/files` `/storage` `/newfolder` `/trash` `/favorite` `/favorites` `/shared` `/settings` `/help`         |
-| Security      | Telegram sign-in, optional browser password, revocable sessions, rate-limited login, encrypted share tokens.    |
-| Accessibility | Keyboard friendly, screen-reader labels, WCAG AA contrast, light / dark / Telegram theme, large touch targets.  |
+| Area          | What you get                                                                                                                                                        |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Saving files  | Send or forward any file, photo, video, audio or voice message. Files keep their real name when Telegram sends one. Albums are handled and duplicates are detected. |
+| Organising    | Nested folders, rename, move, copy, bulk select, favourites, list or grid view.                                                                                     |
+| Finding       | Search by name across all folders, filter by type or extension, sort by date, name or size.                                                                         |
+| Safety net    | Trash with Undo, restore, automatic purge after 30 days, manual **Empty Trash**.                                                                                    |
+| Sharing       | One revocable link per file. The recipient receives the file from your bot.                                                                                         |
+| Preview       | Tap an image to open it, then swipe or use the arrows to move through the images. Size limit 1–20 MB (default 2 MB) in Settings.                                    |
+| Bot commands  | `/app` `/files` `/storage` `/newfolder` `/trash` `/favorite` `/favorites` `/shared` `/settings` `/help`                                                             |
+| Security      | Telegram sign-in, optional browser password, revocable sessions, rate-limited login, encrypted share tokens.                                                        |
+| Accessibility | Keyboard friendly, screen-reader labels, WCAG AA contrast, light / dark / Telegram theme, large touch targets.                                                      |
 
 Browser upload and download are intentionally **not** part of this project: files go in through the bot and
 are delivered back through the bot.
@@ -182,7 +182,7 @@ cd frontend && npm install && npm run dev   # Mini App on http://localhost:5173 
 Outside Telegram the app shows a password sign-in. Open it once from Telegram, go to _Settings → Account and
 security_ and enable browser sign-in.
 
-Quality checks (also run by GitHub Actions on every push):
+Quality checks (you can also run them in GitHub Actions: _Actions → CI → Run workflow_):
 
 ```bash
 deno fmt --check && deno lint && deno task check && deno task test
@@ -194,20 +194,34 @@ cd frontend && npm run lint && npm run build
 ```text
 .
 ├── src/                    Backend (Deno + Hono + grammY)
+│   ├── main.ts             Entry point: web server, API and webhook
+│   ├── config.ts           Reads and checks the environment variables
 │   ├── routes/             HTTP API: auth, files, folders, shares, system
 │   ├── bot.ts              Bot commands and inline buttons
-│   ├── storage.ts          Saving incoming files to the channel
+│   ├── telegram.ts         Bot instance and storage-channel helpers
+│   ├── storage.ts          Saving incoming files to the channel (names, duplicates)
 │   ├── album.ts            One status message per album, shared across servers (albumDb.ts)
+│   ├── share.ts            Delivering shared files to recipients
 │   ├── security.ts         Sessions, passwords, Telegram verification, encryption
-│   └── maintenance.ts      Automatic purge of Trash and activity
+│   ├── rateLimit.ts        Sign-in throttling
+│   ├── maintenance.ts      Automatic purge of Trash and activity
+│   ├── db.ts               Supabase client
+│   ├── lib.ts              Pure helpers shared by routes, bot and tests
+│   ├── redact.ts           Keeps secrets out of logs
+│   ├── errors.ts, http.ts, botErrors.ts   Error handling for the API and the bot
+│   └── all_test.ts         All backend tests (test_env.ts prepares their environment)
 ├── frontend/               Mini App (React + Vite)
+│   ├── vercel.json         Backend address (edit it) and security headers
 │   └── src/                pages/, components/, api.ts, telegram.ts
 ├── supabase/
 │   └── schema.sql          Database setup (safe to run more than once)
 ├── scripts/set_webhook.ts  Registers the Telegram webhook
-├── .github/                CI workflow and issue forms
+├── .github/                CI and release workflows, issue forms
+├── deno.json               Deno tasks (dev, check, test, webhook)
+├── .env.example            Template for your settings
 ├── DEPLOYMENT.md           Step-by-step deployment guide
-└── CHANGELOG.md
+├── CHANGELOG.md
+└── LICENSE
 ```
 
 ## Security
@@ -215,8 +229,8 @@ cd frontend && npm run lint && npm run build
 - Never commit `.env`. `.env.example` contains placeholders only. If a real secret was ever committed, rotate
   it (BotFather → `/revoke`, a new Supabase service key, new random secrets) and purge it from git history.
 - The service-role key bypasses row-level security. Keep it on the backend only.
-- Password sign-in is limited to 10 failures per account or address per 15 minutes. Telegram sign-in is never
-  locked out.
+- Password sign-in is limited to 10 failures per username and 10 per address in 15 minutes, and 40 in total.
+  Telegram sign-in is never locked out, and _Settings → Reset sign-in lockout_ lifts a pause at once.
 - Share links are unguessable 256-bit tokens, stored encrypted. Set `SHARE_SECRET` to keep them readable when
   you change `SESSION_SECRET`; without it, changing `SESSION_SECRET` makes existing links impossible to
   display in the app (they still work for recipients).
@@ -225,27 +239,32 @@ cd frontend && npm run lint && npm run build
 
 ## Troubleshooting
 
-| Symptom                                                     | Fix                                                                                                          |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Bot ignores files or buttons do nothing                     | Run `deno task webhook --info`. `allowed_updates` must include `callback_query`; re-run `deno task webhook`. |
-| _Live status_ says the storage channel is a problem         | Make the bot an admin of the channel with _Post messages_, and check `STORAGE_CHANNEL_ID`.                   |
-| "Forbidden origin" in the browser                           | `MINI_APP_URL` must equal the exact frontend origin (or set `DEV_ORIGIN` for local work).                    |
-| Sign-in screen says the server is not responding (HTTP 5xx) | Open `APP_URL/health` and the Deno Deploy logs; a missing or invalid environment variable stops the backend. |
-| Opened in a normal browser: sign-in screen                  | Expected. Sign in with your browser password, or open the app from Telegram.                                 |
-| Share link shows "unavailable"                              | Revoke it in _Shared_ and share the file again.                                                              |
+| Symptom                                                                                             | Fix                                                                                                          |
+| --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Bot ignores files or buttons do nothing                                                             | Run `deno task webhook --info`. `allowed_updates` must include `callback_query`; re-run `deno task webhook`. |
+| _Live status_ says the storage channel is a problem                                                 | Make the bot an admin of the channel with _Post messages_, and check `STORAGE_CHANNEL_ID`.                   |
+| "Forbidden origin" in the browser                                                                   | `MINI_APP_URL` must equal the exact frontend origin (or set `DEV_ORIGIN` for local work).                    |
+| Error screen with **Try again**, or a sign-in screen saying the server is not responding (HTTP 5xx) | Open `APP_URL/health` and the Deno Deploy logs; a missing or invalid environment variable stops the backend. |
+| Opened in a normal browser: sign-in screen                                                          | Expected. Sign in with your browser password, or open the app from Telegram.                                 |
+| Share link shows "unavailable"                                                                      | Revoke it in _Shared_ and share the file again.                                                              |
 
 More in [DEPLOYMENT.md](DEPLOYMENT.md#if-something-goes-wrong).
 
 ### Known limits
 
-- **Albums on several server instances.** Files of one album can reach different instances of a serverless
-  host.
+- **Albums on an older database.** Album progress is shared between server instances through the
+  `album_reports` table in `supabase/schema.sql`. If that table is missing, each instance can post its own
+  "Album received" message. Re-run `supabase/schema.sql` to fix it.
 - **Very slow saves.** After 15 seconds a save still in progress changes its message to "⏳ Still saving -
   this file is taking longer than usual" and finishes with ✅ when it completes. The webhook itself answers
   after 25 seconds. If the host stops the instance in between, that notice stays; send the file again, nothing
   is duplicated.
-- **Password sign-in lock.** Forty wrong attempts in 15 minutes pause password sign-in for everyone. Open the
-  app from Telegram and use _Settings → Reset sign-in lockout_ to lift it at once.
+- **Password sign-in lock.** Ten wrong attempts for the same username, or from the same address, in 15 minutes
+  pause password sign-in, and forty in total pause it for everyone. Even the correct password is refused while
+  it is paused. The username is not secret, so anyone can start a pause, but only password sign-in is
+  affected. Open the app from Telegram (always available) and use _Settings → Reset sign-in lockout_ to lift
+  it at once. Behind a proxy such as Vercel the backend may see the proxy's address for every visitor unless
+  `TRUSTED_IP_HEADER` is set (see [Configuration](#configuration)).
 
 ## Contributing
 
