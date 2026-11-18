@@ -34,4 +34,8 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run build
-      - run: npm audit --audit-level=high
+      # Only what ships to users can fail the build. Build tools (Vite, ESLint) are checked separately below.
+      - run: npm audit --omit=dev --audit-level=high
+      - name: Audit build tools (informational)
+        run: npm audit --audit-level=high
+        continue-on-error: true
