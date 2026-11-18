@@ -7,9 +7,9 @@ const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}
 export const isUuid = (value: unknown): value is string =>
   typeof value === "string" && uuidPattern.test(value);
 
-/** Parses 1-200 unique UUIDs, or returns null when the input is invalid. */
-export function parseIds(input: unknown): string[] | null {
-  if (!Array.isArray(input) || input.length < 1 || input.length > 200) return null;
+/** Parses 1 to `max` (default 200) unique UUIDs, or returns null when the input is invalid. */
+export function parseIds(input: unknown, max = 200): string[] | null {
+  if (!Array.isArray(input) || input.length < 1 || input.length > max) return null;
   if (input.some((id) => !isUuid(id))) return null;
   return [...new Set(input as string[])];
 }

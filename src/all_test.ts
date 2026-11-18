@@ -1763,9 +1763,10 @@ const withSettings = (files: () => unknown) => (table: string) =>
 
   // ============================================================ 2. long id lists are sent to the database in groups
 
-  Deno.test("batch move / copy / trash: up to 200 ids work and no database request carries more than 100", async () => {
+  Deno.test("batch move / copy / trash: move and trash take up to 100 ids, copy up to 200, and no request carries more than 100", async () => {
     try {
       const ids = Array.from({ length: 150 }, () => crypto.randomUUID());
+      const idsFor = (path: string) => path === "/files/batch/copy" ? ids : ids.slice(0, 100);
       const inSizes: number[] = [];
       let inserted = 0;
       client.from = (table: string) => {
@@ -1794,15 +1795,15 @@ const withSettings = (files: () => unknown) => (table: string) =>
       const app = new Hono();
       app.onError(handleError);
       app.route("/", fileRoutes);
-      // move looks the files up and then updates them (2 x 150 ids); copy only looks up; trash only updates
+      // move looks the files up and then updates them (2 x 100 ids); copy only looks up (150); trash only updates (100)
       for (
-        const [path, expectedTotal] of [["/files/batch/move", 300], ["/files/batch/copy", 150], [
+        const [path, expectedTotal] of [["/files/batch/move", 200], ["/files/batch/copy", 150], [
           "/files/batch/trash",
-          150,
+          100,
         ]] as const
       ) {
         inSizes.length = 0;
-        const response = await app.request(path, json("POST", { file_ids: ids }));
+        const response = await app.request(path, json("POST", { file_ids: idsFor(path) }));
         assert.ok(response.status === 200 || response.status === 201, `${path} -> ${response.status}`);
         assert.ok(
           inSizes.every((size) => size <= 100),
@@ -1815,11 +1816,18 @@ const withSettings = (files: () => unknown) => (table: string) =>
         );
       }
       assert.equal(inserted, 150); // the copy really covered every file
-      const tooMany = await app.request(
-        "/files/batch/trash",
-        json("POST", { file_ids: Array.from({ length: 201 }, () => crypto.randomUUID()) }),
-      );
-      assert.equal(tooMany.status, 400);
+      for (
+        const [path, count] of [["/files/batch/trash", 101], ["/files/batch/move", 101], [
+          "/files/batch/copy",
+          201,
+        ]] as const
+      ) {
+        const tooMany = await app.request(
+          path,
+          json("POST", { file_ids: Array.from({ length: count }, () => crypto.randomUUID()) }),
+        );
+        assert.equal(tooMany.status, 400, path);
+      }
     } finally {
       restore();
     }
@@ -4541,5 +4549,109 @@ const withSettings = (files: () => unknown) => (table: string) =>
     } finally {
       client.rpc = realRpc;
     }
+  });
+}
+
+{
+  const { db } = await import("./db.ts");
+  const { fileRoutes } = await import("./routes/files.ts");
+  const { systemRoutes } = await import("./routes/system.ts");
+  const { handleError } = await import("./http.ts");
+  type AppEnv = import("./http.ts").AppEnv;
+  // deno-lint-ignore no-explicit-any
+  const client = db as any;
+  const ID = "11111111-1111-4111-8111-111111111111";
+
+  // Every query step answers with itself; the final read reports a database error.
+  // deno-lint-ignore no-explicit-any
+  const down = (): any =>
+    new Proxy({}, {
+      get: (_target, prop) =>
+        prop === "then"
+          ? (resolve: (value: unknown) => void) =>
+            resolve({ data: null, count: null, error: { message: "down" } })
+          : prop === "maybeSingle"
+          ? () => Promise.resolve({ data: null, error: { message: "down" } })
+          : () => down(),
+    });
+
+  const appFor = (routes: Hono<AppEnv>) => {
+    const app = new Hono<AppEnv>();
+    app.onError(handleError);
+    app.route("/", routes);
+    return app;
+  };
+
+  Deno.test("database outage: lookups answer 503 with Retry-After, never a false 404", async () => {
+    const realFrom = client.from;
+    const real = console.error;
+    try {
+      console.error = () => undefined;
+      client.from = () => down();
+      const cases: Array<[string, string]> = [
+        ["DELETE", `/trash/folders/${ID}`],
+        ["DELETE", `/files/${ID}/permanent`],
+        ["POST", `/files/${ID}/favorite`],
+        ["GET", `/files/${ID}/preview`],
+      ];
+      for (const [method, path] of cases) {
+        const response = await appFor(fileRoutes).request(path, { method });
+        assert.equal(response.status, 503, `${method} ${path}`);
+        assert.equal(response.headers.get("Retry-After"), "5");
+      }
+      const settings = await appFor(systemRoutes).request("/settings");
+      assert.equal(settings.status, 503);
+    } finally {
+      client.from = realFrom;
+      console.error = real;
+    }
+  });
+
+  Deno.test("database lookups: a file that really is missing still answers 404", async () => {
+    const realFrom = client.from;
+    try {
+      const empty = {
+        select: () => ({
+          eq: () => ({
+            eq: () => ({ maybeSingle: () => Promise.resolve({ data: null, error: null }) }),
+            maybeSingle: () => Promise.resolve({ data: null, error: null }),
+          }),
+        }),
+      };
+      client.from = () => empty;
+      assert.equal((await appFor(fileRoutes).request(`/files/${ID}/preview`)).status, 404);
+      assert.equal(
+        (await appFor(fileRoutes).request(`/files/${ID}/permanent`, { method: "DELETE" })).status,
+        404,
+      );
+      assert.equal(
+        (await appFor(fileRoutes).request(`/trash/folders/${ID}`, { method: "DELETE" })).status,
+        404,
+      );
+    } finally {
+      client.from = realFrom;
+    }
+  });
+
+  Deno.test("batch move and trash accept at most 100 ids (one all-or-nothing statement); copy keeps 200", async () => {
+    const ids = (n: number) =>
+      Array.from({ length: n }, (_, i) => `00000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`);
+    const post = (path: string, count: number) =>
+      appFor(fileRoutes).request(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file_ids: ids(count) }),
+      });
+    assert.equal((await post("/files/batch/move", 101)).status, 400);
+    assert.equal((await post("/files/batch/trash", 101)).status, 400);
+    assert.match(
+      ((await (await post("/files/batch/trash", 101)).json()) as { error: string }).error,
+      /1-100/,
+    );
+    assert.notEqual((await post("/files/batch/copy", 101)).status, 400); // copy still allows up to 200
+    const { parseIds } = await import("./lib.ts");
+    assert.equal(parseIds(ids(100), 100)?.length, 100);
+    assert.equal(parseIds(ids(101), 100), null);
+    assert.equal(parseIds(ids(200))?.length, 200);
   });
 }
