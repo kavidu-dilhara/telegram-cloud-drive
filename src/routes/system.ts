@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import denoConfig from "../../deno.json" with { type: "json" };
 import { allowedOrigins, config } from "../config.ts";
+import { ServiceUnavailableError } from "../errors.ts";
 import { db, filesByIds, folderExists, logAction } from "../db.ts";
 import { type AppEnv, fail, jsonBody } from "../http.ts";
 import { DEFAULT_PREVIEW_MB, isPreviewMb, isUuid, recentWebhookError } from "../lib.ts";
@@ -33,18 +34,13 @@ export const DEFAULT_SETTINGS = {
 
 async function loadSettings() {
   const { data, error } = await db.from("settings").select("key,value");
-  if (error) throw error;
+  if (error) throw new ServiceUnavailableError("Unable to read settings");
   const stored = Object.fromEntries((data ?? []).map((row) => [row.key, row.value]));
   return { ...DEFAULT_SETTINGS, ...stored };
 }
 
-systemRoutes.get("/settings", async (c) => {
-  try {
-    return c.json(await loadSettings());
-  } catch {
-    return fail(c, "Unable to load settings", 500);
-  }
-});
+// A database failure becomes a 503 through the shared error handler.
+systemRoutes.get("/settings", async (c) => c.json(await loadSettings()));
 
 systemRoutes.patch("/settings", async (c) => {
   const body = await jsonBody<Record<string, unknown>>(c);

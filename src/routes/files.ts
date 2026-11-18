@@ -120,13 +120,15 @@ fileRoutes.patch("/files/:id", async (c) => {
 
 async function moveOrCopy(c: Ctx, copy: boolean, suppliedIds?: string[], suppliedFolder?: string | null) {
   const body = suppliedIds ? null : await jsonBody<{ file_ids?: unknown; folder_id?: unknown }>(c);
-  const ids = suppliedIds ?? parseIds(body?.file_ids);
+  // Moving is one database statement only up to IN_CHUNK ids, so it is all-or-nothing; copying has no such limit.
+  const maxIds = copy ? 200 : IN_CHUNK;
+  const ids = suppliedIds ?? parseIds(body?.file_ids, maxIds);
   const folderId = suppliedFolder !== undefined
     ? suppliedFolder
     : body?.folder_id === undefined
     ? null
     : body.folder_id;
-  if (!ids) return fail(c, "file_ids must contain 1-200 valid ids");
+  if (!ids) return fail(c, `file_ids must contain 1-${maxIds} valid ids`);
   if (folderId !== null && (!isUuid(folderId) || !await folderExists(folderId as string))) {
     return fail(c, "Invalid destination folder");
   }
@@ -199,8 +201,9 @@ fileRoutes.delete("/files/:id", async (c) => {
 });
 
 fileRoutes.post("/files/batch/trash", async (c) => {
-  const ids = parseIds((await jsonBody<{ file_ids?: unknown }>(c))?.file_ids);
-  if (!ids) return fail(c, "file_ids must contain 1-200 valid ids");
+  // At most IN_CHUNK ids, so trashing is one database statement and all-or-nothing.
+  const ids = parseIds((await jsonBody<{ file_ids?: unknown }>(c))?.file_ids, IN_CHUNK);
+  if (!ids) return fail(c, `file_ids must contain 1-${IN_CHUNK} valid ids`);
   const { data, error } = await setTrashed(ids, true);
   if (error) return fail(c, "Unable to trash files", 500);
   await logAction("trash", undefined, { count: data?.length ?? 0 });
@@ -329,7 +332,9 @@ fileRoutes.post("/trash/folders/:id/restore", async (c) => {
 fileRoutes.delete("/trash/folders/:id", async (c) => {
   const id = c.req.param("id");
   if (!isUuid(id)) return fail(c, "Invalid Trash item id");
-  const { data: entry } = await db.from("trashed_folders").select("name").eq("id", id).maybeSingle();
+  const { data: entry, error: entryError } = await db.from("trashed_folders").select("name").eq("id", id)
+    .maybeSingle();
+  if (entryError) throw new ServiceUnavailableError("Unable to look up the Trash item");
   if (!entry) return fail(c, "Folder not found in Trash", 404);
   const { data, error } = await db.rpc("purge_trashed_folder", { p_entry: id });
   if (error) {
@@ -347,8 +352,9 @@ fileRoutes.delete("/trash/folders/:id", async (c) => {
 fileRoutes.delete("/files/:id/permanent", async (c) => {
   const id = c.req.param("id");
   if (!isUuid(id)) return fail(c, "Invalid file id");
-  const { data: file } = await db.from("files").select("file_name,status,trash_entry_id").eq("id", id)
-    .maybeSingle();
+  const { data: file, error: fileError } = await db.from("files").select("file_name,status,trash_entry_id")
+    .eq("id", id).maybeSingle();
+  if (fileError) throw new ServiceUnavailableError("Unable to look up the file");
   if (!file) return fail(c, "File not found", 404);
   if (file.status !== "trashed") return fail(c, "Move the file to Trash before deleting it permanently", 409);
   if (file.trash_entry_id) {
@@ -413,8 +419,9 @@ fileRoutes.get("/favorites/ids", async (c) => {
 fileRoutes.post("/files/:id/favorite", async (c) => {
   const id = c.req.param("id");
   if (!isUuid(id)) return fail(c, "Invalid file id");
-  const { data: file } = await db.from("files").select("id,file_name").eq("id", id).eq("status", "active")
-    .maybeSingle();
+  const { data: file, error: fileError } = await db.from("files").select("id,file_name").eq("id", id)
+    .eq("status", "active").maybeSingle();
+  if (fileError) throw new ServiceUnavailableError("Unable to look up the file");
   if (!file) return fail(c, "File not found", 404);
   const { error } = await db.from("favorites").upsert({ file_id: id }, { onConflict: "file_id" });
   if (error) return fail(c, "Unable to favorite file", 500);
@@ -436,10 +443,10 @@ fileRoutes.delete("/files/:id/favorite", async (c) => {
 fileRoutes.get("/files/:id/preview", async (c) => {
   const id = c.req.param("id");
   if (!isUuid(id)) return fail(c, "Invalid file id");
-  const { data: file } = await db.from("files").select("telegram_file_id,file_size,mime_type,file_name").eq(
-    "id",
-    id,
-  ).eq("status", "active").maybeSingle();
+  const { data: file, error: fileError } = await db.from("files").select(
+    "telegram_file_id,file_size,mime_type,file_name",
+  ).eq("id", id).eq("status", "active").maybeSingle();
+  if (fileError) throw new ServiceUnavailableError("Unable to look up the file");
   if (!file) return fail(c, "File not found", 404);
   const mime = previewImageType(file.mime_type);
   if (!mime) return fail(c, "Only PNG, JPEG, GIF and WebP images can be previewed", 415);
