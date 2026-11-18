@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+**Fixes**
+
+- A database outage no longer shows up as "not found": permanent delete, delete from Trash, favourite and
+  image preview now answer 503 with a retry hint when the file lookup fails, and the settings list does the
+  same. A file that really does not exist still answers 404.
+- Batch move and batch trash accept at most 100 files per request (the app already sent 100 at a time), so
+  each one is a single all-or-nothing database statement and can no longer stop half way. Copy still
+  accepts 200.
+
+- CI: `npm audit` failed on a new "high" advisory in `picomatch`, a file-matching helper used only by the
+  build tools (Vite, ESLint). It is not part of the app, and no patched version exists yet. The blocking audit
+  now checks only what ships (`--omit=dev`, currently 0 issues); the full audit still runs as an informational
+  step. Vite is updated to 6.4.6, which fixes its own advisory.
+
+**Tests**
+
+- Added tests for the 503 answers on a database outage, the unchanged 404 for missing files and the 100-file
+  limit.
+
 ## 1.1.0
 
 **Added**
